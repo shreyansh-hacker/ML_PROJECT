@@ -31,7 +31,6 @@ package-lock.json
 Thumbs.db
 
 # Database dump files & spatial backups
-*.sql
 *.dump
 *.tar
 *.gz
