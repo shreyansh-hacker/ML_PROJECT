@@ -1,17 +1,22 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 class Settings(BaseSettings):
-    DB_USER: str = "cctv_admin"
-    DB_PASSWORD: str = "cctv_password123"
-    DB_HOST: str = "localhost"
-    DB_PORT: int = 5432
-    DB_NAME: str = "cctv_registry_db"
+    database_url: str = Field(
+        default="postgresql://cctv_admin:cctv_password123@127.0.0.1:5432/ml_project",
+        validation_alias="DATABASE_URL"
+    )
 
     @property
     def DATABASE_URL(self) -> str:
-        return f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        """Returns a standard PostgreSQL DSN compatible with asyncpg."""
+        return self.database_url.replace("postgresql+asyncpg://", "postgresql://")
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False
+    )
 
 settings = Settings()
