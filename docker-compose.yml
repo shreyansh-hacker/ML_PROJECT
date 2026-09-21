@@ -7,7 +7,7 @@ services:
     environment:
       POSTGRES_USER: cctv_admin
       POSTGRES_PASSWORD: cctv_password123
-      POSTGRES_DB: cctv_registry
+      POSTGRES_DB: ml_project
     ports:
       - "5432:5432"
     volumes:
