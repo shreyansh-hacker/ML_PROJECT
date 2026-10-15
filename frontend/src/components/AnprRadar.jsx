@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from "react";
 import {
-  Shield,
   Search,
   AlertTriangle,
   CheckCircle2,
@@ -27,10 +26,12 @@ import {
   Plus,
   AlertOctagon,
   MapPin,
-  Compass
+  Compass,
+  Wifi,
+  KeyRound
 } from "lucide-react";
 import "./AnprRadar.css";
-import { apiUrl } from "../utils/apiConfig";
+import { apiFetch, apiUrl } from "../utils/apiConfig";
 
 // Synthesizes a high-urgency alternating police siren sound via Web Audio API
 function playSirenSound() {
@@ -149,8 +150,23 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
   const [sources, setSources] = useState([]);
   const [selectedSourceId, setSelectedSourceId] = useState("demo_video");
   const [isRunning, setIsRunning] = useState(false);
+  const [streamStatus, setStreamStatus] = useState("STOPPED");
+  const [streamError, setStreamError] = useState("");
   const [streamUrl, setStreamUrl] = useState(() => apiUrl("/api/anpr/stream"));
   const [fps, setFps] = useState(0);
+  const [showOnvifDiscovery, setShowOnvifDiscovery] = useState(false);
+  const [onvifUsername, setOnvifUsername] = useState("");
+  const [onvifPassword, setOnvifPassword] = useState("");
+  const [onvifStreamUsername, setOnvifStreamUsername] = useState("");
+  const [onvifStreamPassword, setOnvifStreamPassword] = useState("");
+  const [onvifUseCredentialsForRtsp, setOnvifUseCredentialsForRtsp] = useState(true);
+  const [onvifAddress, setOnvifAddress] = useState("");
+  const [onvifScheme, setOnvifScheme] = useState("http");
+  const [onvifPort, setOnvifPort] = useState("80");
+  const [onvifNotice, setOnvifNotice] = useState(null);
+  const [discoveredCameras, setDiscoveredCameras] = useState([]);
+  const [cameraCredentials, setCameraCredentials] = useState({});
+  const [isDiscovering, setIsDiscovering] = useState(false);
 
   // Search & Target Interception State
   const [searchQuery, setSearchQuery] = useState("");
@@ -181,10 +197,160 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
 
   const fileInputRef = useRef(null);
 
+  const handleOnvifDiscovery = async (deviceId = null, address = null) => {
+    const credentials = deviceId ? cameraCredentials[deviceId] : null;
+    const discoveredDevice = deviceId
+      ? discoveredCameras.find((camera) => camera.device_id === deviceId)
+      : null;
+    const username = deviceId ? credentials?.username : onvifUsername;
+    const password = deviceId ? credentials?.password : onvifPassword;
+    const streamUsername = deviceId ? credentials?.streamUsername : onvifStreamUsername;
+    const streamPassword = deviceId ? credentials?.streamPassword : onvifStreamPassword;
+    const useOnvifCredentialsForRtsp = deviceId
+      ? credentials?.useOnvifCredentialsForRtsp !== false
+      : onvifUseCredentialsForRtsp;
+    const needsOnvifCredentials = !deviceId || [
+      "NEEDS_CREDENTIALS",
+      "AUTHENTICATION_FAILED"
+    ].includes(discoveredDevice?.status);
+
+    if (deviceId && needsOnvifCredentials && (!username?.trim() || !password)) {
+      setOnvifNotice({ type: "error", message: "Enter this camera's ONVIF username and password." });
+      return;
+    }
+    if ((!deviceId && Boolean(username?.trim()) !== Boolean(password)) ||
+        Boolean(streamUsername?.trim()) !== Boolean(streamPassword)) {
+      setOnvifNotice({
+        type: "error",
+        message: "Enter both values for each credential pair, or leave the pair blank."
+      });
+      return;
+    }
+    if (address && (!Number.isInteger(Number(onvifPort)) ||
+        Number(onvifPort) < 1 || Number(onvifPort) > 65535)) {
+      setOnvifNotice({ type: "error", message: "Enter an ONVIF port from 1 to 65535." });
+      return;
+    }
+
+    setIsDiscovering(true);
+    setOnvifNotice(null);
+    try {
+      const credentialsBody = username?.trim() && password
+        ? { username: username.trim(), password }
+        : {};
+      const streamCredentialsBody = streamUsername?.trim() && streamPassword
+        ? { stream_username: streamUsername.trim(), stream_password: streamPassword }
+        : {};
+      const body = deviceId
+        ? {
+            device_id: deviceId,
+            ...(discoveredDevice?.connection_address
+              ? {
+                  address: discoveredDevice.connection_address,
+                  scheme: discoveredDevice.connection_scheme || "http",
+                  port: discoveredDevice.connection_port || 80
+                }
+              : {}),
+            ...credentialsBody,
+            ...streamCredentialsBody,
+            use_onvif_credentials_for_rtsp: useOnvifCredentialsForRtsp
+          }
+        : {
+            ...credentialsBody,
+            ...streamCredentialsBody,
+            use_onvif_credentials_for_rtsp: useOnvifCredentialsForRtsp,
+            ...(address
+              ? { address, scheme: onvifScheme, port: Number(onvifPort) }
+              : {})
+          };
+      const response = await apiFetch(apiUrl("/api/onvif/discover"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || "ONVIF discovery failed.");
+      }
+
+      setDiscoveredCameras((previous) => {
+        if (!deviceId && !address) return result;
+        if (address) {
+          const returnedIds = new Set(result.map((camera) => camera.device_id));
+          return [
+            ...previous.filter((camera) => !returnedIds.has(camera.device_id)),
+            ...result
+          ];
+        }
+        return previous.map((camera) =>
+          camera.device_id === deviceId ? result[0] || camera : camera
+        );
+      });
+      setOnvifNotice(
+        result.length
+          ? {
+              type: result.some((camera) => camera.stream_ready) ? "success" : "error",
+              message: deviceId
+                ? result[0]?.detail || "Camera discovery finished."
+                : `${result.filter((camera) => camera.stream_ready).length} of ${result.length} discovered camera(s) now have a working ONVIF RTSP profile.`
+            }
+          : {
+              type: "info",
+              code: address ? "MANUAL_DEVICE_NOT_FOUND" : "NO_DEVICES_FOUND",
+              message: address
+                ? "No ONVIF device responded at that IP and port. Check the address, ONVIF settings, credentials, and backend network access."
+                : "No ONVIF cameras were found in the latest network scan."
+            }
+      );
+      if (deviceId && result[0]?.stream_ready) {
+        setCameraCredentials((previous) => ({
+          ...previous,
+          [deviceId]: {
+            ...previous[deviceId],
+            password: "",
+            streamPassword: ""
+          }
+        }));
+      }
+
+      const sourcesResponse = await apiFetch(apiUrl("/api/anpr/sources"));
+      if (!sourcesResponse.ok) {
+        throw new Error("Cameras were discovered, but the ANPR source list could not be refreshed.");
+      }
+      const availableSources = await sourcesResponse.json();
+      setSources(availableSources);
+      const readyCamera = result.find((camera) => camera.stream_ready);
+      const cameraToSelect = deviceId ? result[0] : readyCamera;
+      if (cameraToSelect?.camera_code) {
+        const registeredSource = availableSources.find(
+          (source) => source.camera_code === cameraToSelect.camera_code
+        );
+        if (registeredSource) setSelectedSourceId(registeredSource.id);
+      }
+    } catch (err) {
+      setOnvifNotice({ type: "error", message: err.message || "Unable to contact ONVIF discovery." });
+    } finally {
+      if (!deviceId) {
+        setOnvifPassword("");
+        setOnvifStreamPassword("");
+      } else {
+        setCameraCredentials((previous) => ({
+          ...previous,
+          [deviceId]: {
+            ...previous[deviceId],
+            password: "",
+            streamPassword: ""
+          }
+        }));
+      }
+      setIsDiscovering(false);
+    }
+  };
+
   // Load Suspect Vehicles Watchlist
   const loadWatchlist = async () => {
     try {
-      const res = await fetch(apiUrl("/api/anpr/watchlist"));
+      const res = await apiFetch(apiUrl("/api/anpr/watchlist"));
       if (res.ok) {
         const data = await res.json();
         setWatchlist(data);
@@ -204,7 +370,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
     setWatchlistNotice(null);
 
     try {
-      const res = await fetch(apiUrl("/api/anpr/watchlist"), {
+      const res = await apiFetch(apiUrl("/api/anpr/watchlist"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -240,7 +406,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
   const handleDeleteWatchlist = async (id, plateStr) => {
     if (!window.confirm(`Remove ${plateStr || "vehicle"} from suspect watchlist?`)) return;
     try {
-      const res = await fetch(apiUrl(`/api/anpr/watchlist/${encodeURIComponent(id)}`), { method: "DELETE" });
+      const res = await apiFetch(apiUrl(`/api/anpr/watchlist/${encodeURIComponent(id)}`), { method: "DELETE" });
       if (res.ok) {
         loadWatchlist();
       }
@@ -256,7 +422,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
     }
     setActiveAlert(null);
     try {
-      await fetch(apiUrl("/api/anpr/alert/acknowledge"), { method: "POST" });
+      await apiFetch(apiUrl("/api/anpr/alert/acknowledge"), { method: "POST" });
     } catch (err) {
       console.warn("Acknowledge alert error:", err);
     }
@@ -266,7 +432,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
   useEffect(() => {
     async function loadSources() {
       try {
-        const res = await fetch(apiUrl("/api/anpr/sources"));
+        const res = await apiFetch(apiUrl("/api/anpr/sources"));
         if (res.ok) {
           const data = await res.json();
           setSources(data);
@@ -281,10 +447,14 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
 
     async function checkStatus() {
       try {
-        const res = await fetch(apiUrl("/api/anpr/status"));
+        const res = await apiFetch(apiUrl("/api/anpr/status"));
         if (res.ok) {
           const data = await res.json();
           setIsRunning(data.is_running);
+          setStreamStatus(
+            data.stream_status ||
+              (data.fps > 0 ? "LIVE" : data.is_running ? "CONNECTING" : "STOPPED")
+          );
           setFps(data.fps || 0);
           if (data.source_id) {
             setSelectedSourceId(data.source_id);
@@ -317,7 +487,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
       const url = targetCamId
         ? `/api/anpr/events?camera_id=${encodeURIComponent(targetCamId)}&limit=100`
         : `/api/anpr/events?limit=100`;
-      const res = await fetch(apiUrl(url));
+      const res = await apiFetch(apiUrl(url));
       if (res.ok) {
         const data = await res.json();
         setEvents(data);
@@ -336,11 +506,15 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
     if (isRunning) {
       interval = setInterval(async () => {
         try {
-          const res = await fetch(apiUrl("/api/anpr/status"));
+          const res = await apiFetch(apiUrl("/api/anpr/status"));
           if (res.ok) {
             const data = await res.json();
             setFps(data.fps || 0);
             setIsRunning(data.is_running);
+            setStreamStatus(
+              data.stream_status ||
+                (data.fps > 0 ? "LIVE" : data.is_running ? "CONNECTING" : "STOPPED")
+            );
 
             if (data.target_plate) {
               if (data.is_target_catched && data.catched_event) {
@@ -376,15 +550,17 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
   const handleToggleStream = async () => {
     if (isRunning) {
       try {
-        await fetch(apiUrl("/api/anpr/stop"), { method: "POST" });
+        await apiFetch(apiUrl("/api/anpr/stop"), { method: "POST" });
         setIsRunning(false);
+        setStreamStatus("STOPPED");
+        setStreamError("");
       } catch (err) {
         console.error("Failed to stop stream:", err);
       }
     } else {
       const curSource = sources.find((s) => s.id === selectedSourceId) || sources[0];
       try {
-        const res = await fetch(apiUrl("/api/anpr/start"), {
+        const res = await apiFetch(apiUrl("/api/anpr/start"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -395,12 +571,18 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
           })
         });
         if (res.ok) {
+          setStreamError("");
           setIsRunning(true);
+          setStreamStatus("CONNECTING");
           setStreamUrl(apiUrl(`/api/anpr/stream?t=${Date.now()}`));
           loadEvents(curSource?.id);
+        } else {
+          const data = await res.json();
+          setStreamError(data.detail || "The stream could not be started.");
         }
       } catch (err) {
         console.error("Failed to start stream:", err);
+        setStreamError("Could not reach the ANPR service. Check that the backend is running.");
       }
     }
   };
@@ -408,6 +590,8 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
   // 5. Change Selected Source (Instant Camera Switch)
   const handleSelectSource = async (sourceId) => {
     setSelectedSourceId(sourceId);
+    setStreamError("");
+    setStreamStatus("CONNECTING");
     // Immediately stop displaying logs from the previously selected camera
     setEvents([]);
 
@@ -415,7 +599,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
     if (!targetSource) return;
 
     try {
-      const res = await fetch(apiUrl("/api/anpr/start"), {
+      const res = await apiFetch(apiUrl("/api/anpr/start"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -427,11 +611,16 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
       });
       if (res.ok) {
         setIsRunning(true);
+        setStreamStatus("CONNECTING");
         setStreamUrl(apiUrl(`/api/anpr/stream?t=${Date.now()}`));
+      } else {
+        const data = await res.json();
+        setStreamError(data.detail || "The selected stream could not be started.");
       }
       loadEvents(sourceId);
     } catch (err) {
       console.error("Failed to switch source:", err);
+      setStreamError("Could not reach the ANPR service. Check that the backend is running.");
     }
   };
 
@@ -460,7 +649,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
     setSearchNotice(null);
 
     try {
-      const res = await fetch(apiUrl("/api/anpr/search"), {
+      const res = await apiFetch(apiUrl("/api/anpr/search"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ plate_number: clean })
@@ -475,7 +664,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
         });
         setSearchNotice({
           type: "success",
-          message: data.message || "🚨 TARGET CATCHED! Vehicle intercepted in camera logs."
+          message: data.message || "ðŸš¨ TARGET CATCHED! Vehicle intercepted in camera logs."
         });
       } else {
         setActiveTarget({
@@ -484,7 +673,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
         });
         setSearchNotice({
           type: "info",
-          message: `ℹ️ Not seen yet. Target ${clean} is locked! Actively scanning video streams across cameras...`
+          message: `â„¹ï¸ Not seen yet. Target ${clean} is locked! Actively scanning video streams across cameras...`
         });
       }
       loadEvents();
@@ -513,7 +702,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
     formData.append("file", file);
 
     try {
-      const res = await fetch(apiUrl("/api/anpr/search-image"), {
+      const res = await apiFetch(apiUrl("/api/anpr/search-image"), {
         method: "POST",
         body: formData
       });
@@ -522,7 +711,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
       if (data.status === "NOT_RECOGNIZED") {
         setSearchNotice({
           type: "warning",
-          message: "⚠️ Could not recognize a number plate in the uploaded image. Please try a clearer photo or enter plate text manually."
+          message: "âš ï¸ Could not recognize a number plate in the uploaded image. Please try a clearer photo or enter plate text manually."
         });
       } else if (data.status === "CATCHED") {
         setActiveTarget({
@@ -532,7 +721,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
         });
         setSearchNotice({
           type: "success",
-          message: `🚨 TARGET CATCHED! Plate recognized: ${data.extracted_plate}. Vehicle was intercepted on ${data.event?.dept_name || "Camera"}!`
+          message: `ðŸš¨ TARGET CATCHED! Plate recognized: ${data.extracted_plate}. Vehicle was intercepted on ${data.event?.dept_name || "Camera"}!`
         });
       } else if (data.status === "NOT_SEEN_YET") {
         setActiveTarget({
@@ -541,7 +730,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
         });
         setSearchNotice({
           type: "info",
-          message: `ℹ️ Plate recognized: ${data.extracted_plate}. Status: Not seen yet. Target locked and actively scanning video streams...`
+          message: `â„¹ï¸ Plate recognized: ${data.extracted_plate}. Status: Not seen yet. Target locked and actively scanning video streams...`
         });
       }
       loadEvents();
@@ -557,7 +746,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
   // 8. Clear Active Target Search
   const handleClearTarget = async () => {
     try {
-      await fetch(apiUrl("/api/anpr/clear-target"), { method: "POST" });
+      await apiFetch(apiUrl("/api/anpr/clear-target"), { method: "POST" });
     } catch (err) {
       console.warn("Clear target error:", err);
     }
@@ -571,7 +760,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
   const handleClearLogs = async () => {
     if (!window.confirm(`Clear detections for ${activeSource?.name || "this camera"}?`)) return;
     try {
-      await fetch(apiUrl(`/api/anpr/events?camera_id=${encodeURIComponent(selectedSourceId)}`), { method: "DELETE" });
+      await apiFetch(apiUrl(`/api/anpr/events?camera_id=${encodeURIComponent(selectedSourceId)}`), { method: "DELETE" });
       setEvents([]);
     } catch (err) {
       console.error("Failed to clear logs:", err);
@@ -667,6 +856,16 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
 
           <button
             type="button"
+            className="anpr-action-btn onvif-discovery-toggle"
+            onClick={() => setShowOnvifDiscovery((visible) => !visible)}
+            aria-expanded={showOnvifDiscovery}
+          >
+            <Wifi size={14} />
+            <span>Discover ONVIF</span>
+          </button>
+
+          <button
+            type="button"
             className={`anpr-action-btn btn-scan ${isRunning ? "btn-active" : ""}`}
             onClick={handleToggleStream}
           >
@@ -685,6 +884,300 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
         </div>
       </div>
 
+      {(streamError || streamStatus === "OFFLINE") && (
+        <div className="anpr-feed-notice" role="status">
+          <div>
+            <strong>{streamError ? "ANPR stream could not start" : "Camera stream is offline"}</strong>
+            <span>
+              {streamError ||
+                "The selected camera is not sending video to the backend. Check its RTSP URL, stream port, and backend network/VPN access, then start the stream again."}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {showOnvifDiscovery && (
+        <section className="onvif-discovery-panel" aria-label="ONVIF camera discovery">
+          <div className="onvif-discovery-heading">
+            <div>
+              <h3>Network camera discovery</h3>
+              <p>
+                Discovery uses local network multicast: keep the camera and backend on the same
+                LAN/VLAN and allow ONVIF discovery through the firewall. Remote sites need a VPN.
+                The app verifies a live RTSP frame before registering a camera; ONVIF and RTSP
+                credentials may differ and are encrypted on the backend.
+              </p>
+              <ol className="onvif-setup-steps">
+                <li>Camera/NVR: enable ONVIF and create an ONVIF user; the RTSP login may be different.</li>
+                <li>Network: allow UDP 3702 discovery and the camera&apos;s ONVIF/RTSP TCP ports from the backend.</li>
+                <li>Scan this LAN, or use the private IP, protocol, and ONVIF port below for a routed/VPN camera.</li>
+                <li>ANPR READY confirms a live RTSP frame; the camera is registered and selected as the ANPR source.</li>
+              </ol>
+            </div>
+            <button
+              type="button"
+              className="onvif-scan-button"
+              onClick={() => handleOnvifDiscovery()}
+              disabled={isDiscovering}
+            >
+              <RotateCw size={15} className={isDiscovering ? "onvif-spin" : ""} />
+              {isDiscovering ? "Scanning..." : "Scan network"}
+            </button>
+          </div>
+
+          <div className="onvif-credentials-row">
+            <label>
+              <span>ONVIF username</span>
+              <input
+                type="text"
+                autoComplete="username"
+                value={onvifUsername}
+                onChange={(event) => setOnvifUsername(event.target.value)}
+                placeholder="Optional if cameras allow guest access"
+              />
+            </label>
+            <label>
+              <span>ONVIF password</span>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={onvifPassword}
+                onChange={(event) => setOnvifPassword(event.target.value)}
+                placeholder="Used to query discovered cameras"
+              />
+            </label>
+            <label>
+              <span>RTSP username (if different)</span>
+              <input
+                type="text"
+                autoComplete="username"
+                value={onvifStreamUsername}
+                onChange={(event) => setOnvifStreamUsername(event.target.value)}
+                placeholder="Optional; defaults to ONVIF user"
+              />
+            </label>
+            <label>
+              <span>RTSP password (if different)</span>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={onvifStreamPassword}
+                onChange={(event) => setOnvifStreamPassword(event.target.value)}
+                placeholder="Only needed if RTSP is separately protected"
+              />
+            </label>
+          </div>
+          <label className="onvif-rtsp-credential-toggle">
+            <input
+              type="checkbox"
+              checked={onvifUseCredentialsForRtsp}
+              onChange={(event) => setOnvifUseCredentialsForRtsp(event.target.checked)}
+            />
+            <span>Use ONVIF credentials for RTSP when separate RTSP credentials are not entered</span>
+          </label>
+          <div className="onvif-manual-connect">
+            <label>
+              <span>Connect by private camera IP</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={onvifAddress}
+                onChange={(event) => setOnvifAddress(event.target.value)}
+                placeholder="Example: 192.168.1.50 (same LAN or reachable VPN)"
+              />
+            </label>
+            <label>
+              <span>ONVIF port</span>
+              <input
+                type="number"
+                min="1"
+                max="65535"
+                value={onvifPort}
+                onChange={(event) => setOnvifPort(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Protocol</span>
+              <select
+                value={onvifScheme}
+                onChange={(event) => {
+                  const nextScheme = event.target.value;
+                  if (
+                    (onvifScheme === "http" && onvifPort === "80") ||
+                    (onvifScheme === "https" && onvifPort === "443")
+                  ) {
+                    setOnvifPort(nextScheme === "https" ? "443" : "80");
+                  }
+                  setOnvifScheme(nextScheme);
+                }}
+              >
+                <option value="http">HTTP</option>
+                <option value="https">HTTPS</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              className="onvif-scan-button"
+              onClick={() => handleOnvifDiscovery(null, onvifAddress.trim())}
+              disabled={isDiscovering || !onvifAddress.trim()}
+            >
+              {isDiscovering ? "Connecting..." : "Connect by IP"}
+            </button>
+          </div>
+
+          {onvifNotice?.code === "NO_DEVICES_FOUND" ? (
+            <div className="onvif-notice onvif-empty-state" role="status">
+              <strong>No ONVIF cameras found in the latest scan</strong>
+              <p>
+                The scan found 0 devices, so a physical camera has not yet been verified as
+                ANPR READY. This result alone does not establish whether a camera is configured
+                or reachable.
+              </p>
+              <ol>
+                <li>Enable ONVIF on the camera or NVR and obtain its ONVIF username and password.</li>
+                <li>Enter those credentials above; enter separate RTSP credentials if the stream uses a different account.</li>
+                <li>Make sure the backend can reach the camera. Local discovery needs the same LAN/VLAN and UDP 3702; routed cameras need a reachable private IP, with ONVIF and RTSP TCP ports allowed.</li>
+                <li>Scan again, or use the private-IP connection below. ANPR READY appears only after a live RTSP frame is verified.</li>
+              </ol>
+            </div>
+          ) : onvifNotice && (
+            <p className={`onvif-notice onvif-notice-${onvifNotice.type}`} role="status">
+              {onvifNotice.message}
+            </p>
+          )}
+
+          {discoveredCameras.length > 0 && (
+            <div className="onvif-device-list">
+              {discoveredCameras.map((camera) => (
+                <article className="onvif-device-card" key={camera.device_id}>
+                  <div className="onvif-device-summary">
+                    <div>
+                      <strong>{camera.make_model || [camera.manufacturer, camera.model].filter(Boolean).join(" ") || "ONVIF camera"}</strong>
+                      <span>{camera.ip_address} Â· {camera.camera_code || camera.status}</span>
+                      <small>{camera.detail}</small>
+                    </div>
+                    <span className={`onvif-device-status ${camera.stream_ready ? "is-ready" : "needs-auth"}`}>
+                      {camera.status === "ANPR_RECONNECT_FAILED"
+                        ? "RECONNECT NEEDED"
+                        : camera.stream_ready
+                          ? "ANPR READY"
+                          : camera.status.replaceAll("_", " ")}
+                    </span>
+                  </div>
+                  {!camera.stream_ready && ["NEEDS_CREDENTIALS", "AUTHENTICATION_FAILED", "RTSP_UNAVAILABLE"].includes(camera.status) && (
+                    <div className="onvif-device-auth">
+                      <KeyRound size={15} />
+                      {["NEEDS_CREDENTIALS", "AUTHENTICATION_FAILED"].includes(camera.status) && (
+                        <>
+                          <input
+                            type="text"
+                            aria-label={`ONVIF username for ${camera.ip_address}`}
+                            autoComplete="username"
+                            placeholder="ONVIF username"
+                            value={cameraCredentials[camera.device_id]?.username || ""}
+                            onChange={(event) =>
+                              setCameraCredentials((previous) => ({
+                                ...previous,
+                                [camera.device_id]: {
+                                  ...previous[camera.device_id],
+                                  username: event.target.value
+                                }
+                              }))
+                            }
+                          />
+                          <input
+                            type="password"
+                            aria-label={`ONVIF password for ${camera.ip_address}`}
+                            autoComplete="current-password"
+                            placeholder="ONVIF password"
+                            value={cameraCredentials[camera.device_id]?.password || ""}
+                            onChange={(event) =>
+                              setCameraCredentials((previous) => ({
+                                ...previous,
+                                [camera.device_id]: {
+                                  ...previous[camera.device_id],
+                                  password: event.target.value
+                                }
+                              }))
+                            }
+                          />
+                        </>
+                      )}
+                      <input
+                        type="text"
+                        aria-label={`RTSP username for ${camera.ip_address}`}
+                        autoComplete="username"
+                        placeholder="RTSP username (if different)"
+                        value={cameraCredentials[camera.device_id]?.streamUsername || ""}
+                        onChange={(event) =>
+                          setCameraCredentials((previous) => ({
+                            ...previous,
+                            [camera.device_id]: {
+                              ...previous[camera.device_id],
+                              streamUsername: event.target.value
+                            }
+                          }))
+                        }
+                      />
+                      <input
+                        type="password"
+                        aria-label={`RTSP password for ${camera.ip_address}`}
+                        autoComplete="current-password"
+                        placeholder="RTSP password (if different)"
+                        value={cameraCredentials[camera.device_id]?.streamPassword || ""}
+                        onChange={(event) =>
+                          setCameraCredentials((previous) => ({
+                            ...previous,
+                            [camera.device_id]: {
+                              ...previous[camera.device_id],
+                              streamPassword: event.target.value
+                            }
+                          }))
+                        }
+                      />
+                      <label className="onvif-rtsp-credential-toggle">
+                        <input
+                          type="checkbox"
+                          checked={cameraCredentials[camera.device_id]?.useOnvifCredentialsForRtsp !== false}
+                          onChange={(event) =>
+                            setCameraCredentials((previous) => ({
+                              ...previous,
+                              [camera.device_id]: {
+                                ...previous[camera.device_id],
+                                useOnvifCredentialsForRtsp: event.target.checked
+                              }
+                            }))
+                          }
+                        />
+                        <span>Use ONVIF credentials for RTSP if separate RTSP credentials are blank</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => handleOnvifDiscovery(camera.device_id)}
+                        disabled={isDiscovering}
+                      >
+                        Connect camera
+                      </button>
+                    </div>
+                  )}
+                  {!camera.stream_ready && camera.status === "DEVICE_UNREACHABLE" && (
+                    <div className="onvif-device-auth">
+                      <button
+                        type="button"
+                        onClick={() => handleOnvifDiscovery(camera.device_id)}
+                        disabled={isDiscovering}
+                      >
+                        Retry connection
+                      </button>
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* 2. REAL-TIME RED ALERT BANNER: SUSPECT VEHICLE INTERCEPTED */}
       {activeAlert && (
         <div className="anpr-red-alert-banner">
@@ -693,7 +1186,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
           </div>
           <div className="red-alert-content">
             <div className="red-alert-badge-row">
-              <span className="red-alert-title-tag">🚨 RED ALERT: SUSPECT VEHICLE INTERCEPTED!</span>
+              <span className="red-alert-title-tag">ðŸš¨ RED ALERT: SUSPECT VEHICLE INTERCEPTED!</span>
               <span className={`reason-pill reason-${(activeAlert.reason || "suspect").toLowerCase()}`}>
                 {activeAlert.reason?.toUpperCase() || "SUSPECT"}
               </span>
@@ -707,9 +1200,9 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
               </div>
 
               <div className="red-alert-details">
-                <div>📍 Camera / Grid: <strong>{activeAlert.dept_name || activeAlert.camera_name || "Surveillance Grid"}</strong> <span className="alert-code-tag">[{activeAlert.camera_code || activeAlert.camera_id || "CAM"}]</span></div>
-                <div>🕒 Intercepted at: <strong>{new Date(activeAlert.timestamp || Date.now()).toLocaleTimeString()}</strong></div>
-                <div>🚗 Vehicle Class: <strong>{activeAlert.vehicle_type || "Vehicle"}</strong></div>
+                <div>ðŸ“ Camera / Grid: <strong>{activeAlert.dept_name || activeAlert.camera_name || "Surveillance Grid"}</strong> <span className="alert-code-tag">[{activeAlert.camera_code || activeAlert.camera_id || "CAM"}]</span></div>
+                <div>ðŸ•’ Intercepted at: <strong>{new Date(activeAlert.timestamp || Date.now()).toLocaleTimeString()}</strong></div>
+                <div>ðŸš— Vehicle Class: <strong>{activeAlert.vehicle_type || "Vehicle"}</strong></div>
               </div>
 
               {activeAlert.crop_url && (
@@ -937,10 +1430,10 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
                   onChange={(e) => setNewReason(e.target.value)}
                   className="watchlist-reason-select"
                 >
-                  <option value="Stolen">🚨 Stolen</option>
-                  <option value="Wanted">⚠️ Wanted</option>
-                  <option value="Suspect">👁️ Suspect</option>
-                  <option value="Other">📋 Other</option>
+                  <option value="Stolen">ðŸš¨ Stolen</option>
+                  <option value="Wanted">âš ï¸ Wanted</option>
+                  <option value="Suspect">ðŸ‘ï¸ Suspect</option>
+                  <option value="Other">ðŸ“‹ Other</option>
                 </select>
               </div>
 
@@ -1000,10 +1493,10 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
                       </span>
                     </td>
                     <td className="watchlist-notes-cell">
-                      {item.notes || item.description || <span className="no-notes">—</span>}
+                      {item.notes || item.description || <span className="no-notes">â€”</span>}
                     </td>
                     <td className="watchlist-date-cell">
-                      {item.created_at ? new Date(item.created_at).toLocaleDateString() : "—"}
+                      {item.created_at ? new Date(item.created_at).toLocaleDateString() : "â€”"}
                     </td>
                     <td style={{ textAlign: "right" }}>
                       <div style={{ display: "inline-flex", gap: "6px", alignItems: "center" }}>
@@ -1052,18 +1545,18 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
               <AlertTriangle size={24} />
             </div>
             <div className="intercept-content">
-              <h4 style={{ color: "#fee2e2" }}>🚨 TARGET VEHICLE CATCHED!</h4>
+              <h4 style={{ color: "#fee2e2" }}>ðŸš¨ TARGET VEHICLE CATCHED!</h4>
               <p>
                 Suspect vehicle matching target plate{" "}
                 <span className="highlight-plate">{activeTarget.plate}</span> was intercepted on the surveillance grid!
               </p>
               <div className="intercept-meta-row">
-                <span>📍 Camera: <strong>{activeTarget.event?.dept_name || activeTarget.event?.camera_name || "Surveillance Grid"}</strong></span>
-                <span>🕒 Intercepted at: <strong>{new Date(activeTarget.event?.timestamp || Date.now()).toLocaleTimeString()}</strong></span>
-                <span>🚗 Vehicle Class: <strong>{activeTarget.event?.vehicle?.type || "Car"}</strong></span>
+                <span>ðŸ“ Camera: <strong>{activeTarget.event?.dept_name || activeTarget.event?.camera_name || "Surveillance Grid"}</strong></span>
+                <span>ðŸ•’ Intercepted at: <strong>{new Date(activeTarget.event?.timestamp || Date.now()).toLocaleTimeString()}</strong></span>
+                <span>ðŸš— Vehicle Class: <strong>{activeTarget.event?.vehicle?.type || "Car"}</strong></span>
                 {activeTarget.event?.crop_url && (
                   <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                    📷 Plate Snapshot:
+                    ðŸ“· Plate Snapshot:
                     <img
                       src={apiUrl(activeTarget.event.crop_url)}
                       alt="Crop"
@@ -1136,9 +1629,15 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
             </div>
 
             <div className="stream-badge-group">
-              <span className={`live-feed-pill ${isRunning ? "status-online" : "status-offline"}`}>
+              <span className={`live-feed-pill ${streamStatus === "LIVE" ? "status-online" : "status-offline"}`}>
                 <span className="live-dot"></span>
-                {isRunning ? "LIVE AI INFERENCE" : "STREAM PAUSED"}
+                {streamStatus === "LIVE"
+                  ? "LIVE AI INFERENCE"
+                  : streamStatus === "OFFLINE"
+                    ? "CAMERA OFFLINE"
+                    : streamStatus === "CONNECTING"
+                      ? "CONNECTING"
+                      : "STREAM PAUSED"}
               </span>
               {isRunning && <span className="fps-counter">{fps} FPS</span>}
             </div>
@@ -1147,6 +1646,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
           <div className="video-screen-wrapper">
             {isRunning ? (
               <img
+                crossOrigin="use-credentials"
                 src={streamUrl}
                 alt="Live ANPR Stream"
                 className="anpr-video-element"
@@ -1348,7 +1848,7 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
                             {log.dept_name || log.camera_name || log.camera_id}
                           </span>
                           <span className="camera-code-tag">
-                            📷 {log.camera_code || "CAM"}
+                            ðŸ“· {log.camera_code || "CAM"}
                           </span>
                         </div>
                       </td>
@@ -1364,9 +1864,9 @@ export default function AnprRadar({ onNavigateToOnboarding, onTrackOnMap, initia
                           }`}
                         >
                           {isWatchlistAlert
-                            ? `🚨 ${log.watchlist_match?.reason?.toUpperCase() || "SUSPECT"}`
+                            ? `ðŸš¨ ${log.watchlist_match?.reason?.toUpperCase() || "SUSPECT"}`
                             : isCatched
-                            ? "🎯 CATCHED"
+                            ? "ðŸŽ¯ CATCHED"
                             : "PASSED"}
                         </span>
                       </td>

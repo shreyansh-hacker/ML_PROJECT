@@ -15,4 +15,14 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: CORS_ORIGINS
-        value: "*"
+        value: "https://drishtigrid.vercel.app"
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SESSION_SIGNING_KEY
+        generateValue: true
+      - key: ONVIF_CREDENTIALS_KEY
+        generateValue: true
+    disk:
+      name: sentinel-camera-data
+      mountPath: /app/data
+      sizeGB: 1

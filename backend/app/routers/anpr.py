@@ -13,11 +13,19 @@ import io
 import csv
 import math
 import numpy as np
-from fastapi import APIRouter, HTTPException, UploadFile, File, Body, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Body, status
 from fastapi.responses import StreamingResponse, FileResponse, Response
 from pydantic import BaseModel, Field
 
-from app.services.anpr_engine import anpr_engine, CROPS_DIR, format_plate_text
+import asyncpg
+from app.db import get_optional_pool
+from app.services.anpr_engine import (
+    anpr_engine,
+    CROPS_DIR,
+    format_plate_text,
+    get_demo_video_source,
+)
+from app.services.camera_sources import get_registered_camera, list_database_cameras
 
 router = APIRouter(prefix="/api/anpr", tags=["ANPR Intelligence & Surveillance"])
 logger = logging.getLogger("uvicorn.error")
@@ -27,7 +35,6 @@ class StartEngineRequest(BaseModel):
     source_type: str = Field("DEMO_VIDEO", description="DEMO_VIDEO | LOCAL_WEBCAM | CAMERA")
     source_id: Optional[str] = "demo_video"
     source_name: Optional[str] = "Demo Highway Traffic"
-    rtsp_url: Optional[str] = ""
 
 
 class SearchPlateRequest(BaseModel):
@@ -49,19 +56,79 @@ class FrameDetectionRequest(BaseModel):
 
 
 @router.get("/sources")
-async def get_sources():
+async def get_sources(db: Optional[asyncpg.Pool] = Depends(get_optional_pool)):
     """List all available sources: Demo Video, Laptop Webcam, and Registered CCTV Cameras."""
-    return anpr_engine.get_sources()
+    sources = anpr_engine.get_sources()
+    if db is None:
+        return sources
+
+    sources_by_code = {
+        str(source.get("camera_code", "")).lower(): source
+        for source in sources
+        if source.get("camera_code")
+    }
+    for camera in await list_database_cameras(db):
+        camera_code = str(camera["camera_code"])
+        source_type = (
+            "LOCAL_WEBCAM"
+            if str(camera["source_type"]).upper() == "LOCAL_WEBCAM"
+            else "CAMERA"
+        )
+        source = sources_by_code.get(camera_code.lower())
+        if source:
+            source.update(
+                {
+                    "id": camera["id"],
+                    "source_type": source_type,
+                    "location": camera["dept_name"],
+                    "status": camera["status"],
+                }
+            )
+            continue
+
+        source = {
+            "id": camera["id"],
+            "name": f"{camera_code} - {camera['dept_name']}",
+            "source_type": source_type,
+            "location": camera["dept_name"],
+            "camera_code": camera_code,
+            "rtsp_url": "",
+            "stream_auth_managed": "@" in str(camera["rtsp_url"] or "").partition("://")[2],
+            "status": camera["status"],
+        }
+        sources.append(source)
+        sources_by_code[camera_code.lower()] = source
+    return sources
 
 
 @router.post("/start")
-async def start_stream(req: StartEngineRequest):
+async def start_stream(
+    req: StartEngineRequest,
+    db: Optional[asyncpg.Pool] = Depends(get_optional_pool),
+):
     """Start ANPR processing on the selected camera/video source."""
+    if req.source_type == "DEMO_VIDEO" and get_demo_video_source(req.source_id or "demo_video") is None:
+        raise HTTPException(status_code=400, detail="Unknown demo video source.")
+    camera_metadata = None
+    rtsp_url = ""
+    if req.source_type == "CAMERA":
+        camera_metadata = await get_registered_camera(req.source_id or "", db)
+        if camera_metadata is None:
+            raise HTTPException(status_code=404, detail="Registered camera not found.")
+        from app.routers.stream import _camera_stream_input
+
+        rtsp_url = _camera_stream_input(camera_metadata)
+        if not rtsp_url:
+            raise HTTPException(
+                status_code=400,
+                detail="This camera does not have an active RTSP or HTTP stream URL.",
+            )
     status_info = anpr_engine.start(
         source_type=req.source_type,
         source_id=req.source_id or "source",
         source_name=req.source_name or "Active Source",
-        rtsp_url=req.rtsp_url or ""
+        rtsp_url=rtsp_url,
+        camera_metadata=camera_metadata,
     )
     return status_info
 
@@ -88,7 +155,8 @@ async def get_stream():
                 anpr_engine.source_type,
                 anpr_engine.source_id,
                 anpr_engine.source_name,
-                anpr_engine.rtsp_url
+                anpr_engine.rtsp_url,
+                camera_metadata=anpr_engine.camera_metadata,
             )
         else:
             anpr_engine.start("DEMO_VIDEO", "demo_video", "Demo Highway Video (test_video.mp4)")
@@ -306,6 +374,7 @@ async def search_detection_metadata(
     location: Optional[str] = None,
     page: int = 1,
     page_size: int = 25,
+    db: Optional[asyncpg.Pool] = Depends(get_optional_pool),
 ):
     """
     Search and filter ANPR detection metadata with server-side pagination.
@@ -376,7 +445,7 @@ async def search_detection_metadata(
 
     # Available cameras summary for filter dropdown
     available_cams = []
-    sources = anpr_engine.get_sources()
+    sources = await get_sources(db)
     for s in sources:
         available_cams.append({
             "id": s.get("id"),

@@ -25,7 +25,7 @@ import {
   Car
 } from "lucide-react";
 import CameraFeedModal from "./CameraFeedModal";
-import { apiUrl } from "../utils/apiConfig";
+import { apiFetch, apiUrl } from "../utils/apiConfig";
 
 // Fix default Leaflet icon paths in Vite
 delete L.Icon.Default.prototype._getIconUrl;
@@ -74,7 +74,7 @@ const createCustomMarkerIcon = (status) => {
   });
 };
 
-// Chronological breadcrumb trail marker pins (1, 2, 3... or 📍)
+// Chronological breadcrumb trail marker pins (1, 2, 3... or ðŸ“)
 const createBreadcrumbMarkerIcon = (point, isFirst, isLast, isSingle) => {
   let bg = "#0284c7"; // Transit checkpoint blue
   let label = String(point.order || 1);
@@ -82,7 +82,7 @@ const createBreadcrumbMarkerIcon = (point, isFirst, isLast, isSingle) => {
 
   if (isSingle) {
     bg = "#10b981"; // Emerald green
-    label = "📍";
+    label = "ðŸ“";
   } else if (isFirst) {
     bg = "#10b981"; // Origin green
     label = "1";
@@ -178,7 +178,7 @@ const createCheckpointPopupHtml = (point, route) => {
           <span style="background: #1e3a8a; color: #fff; font-size: 9px; padding: 2px 4px;">IND</span>
           <span style="padding: 2px 8px; font-size: 13px; color: #0f172a;">${point.plate_number || route.plate_number}</span>
         </div>
-        ${point.is_watchlist ? '<span style="background: #fee2e2; color: #dc2626; font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 4px; border: 1px solid #f87171;">🚨 SUSPECT</span>' : ''}
+        ${point.is_watchlist ? '<span style="background: #fee2e2; color: #dc2626; font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 4px; border: 1px solid #f87171;">ðŸš¨ SUSPECT</span>' : ''}
       </div>
 
       <!-- VEHICLE CLASS -->
@@ -196,7 +196,7 @@ const createCheckpointPopupHtml = (point, route) => {
       <!-- LOCATION -->
       <div style="margin-bottom: 6px;">
         <span style="color: #64748b; font-size: 11px;">Location:</span><br/>
-        <span style="color: #0f172a; font-weight: 600;">📍 ${point.location_name || `${point.latitude.toFixed(4)}, ${point.longitude.toFixed(4)}`}</span>
+        <span style="color: #0f172a; font-weight: 600;">ðŸ“ ${point.location_name || `${point.latitude.toFixed(4)}, ${point.longitude.toFixed(4)}`}</span>
       </div>
 
       ${point.distance_from_prev_km ? `
@@ -207,7 +207,7 @@ const createCheckpointPopupHtml = (point, route) => {
 
       ${point.crop_url ? `
         <div style="margin-top: 8px;">
-          <img src="${point.crop_url}" alt="Plate Crop" style="width: 100%; max-height: 48px; object-fit: contain; border-radius: 4px; border: 1px solid #cbd5e1; background: #000;" />
+          <img crossorigin="use-credentials" src="${point.crop_url}" alt="Plate Crop" style="width: 100%; max-height: 48px; object-fit: contain; border-radius: 4px; border: 1px solid #cbd5e1; background: #000;" />
         </div>
       ` : ''}
     </div>
@@ -279,7 +279,7 @@ export default function GisMap({
     setDeleteLoading(true);
     try {
       const targetId = cameraToDelete.id || cameraToDelete.code;
-      const res = await fetch(apiUrl(`/api/cameras/${encodeURIComponent(targetId)}`), {
+      const res = await apiFetch(apiUrl(`/api/cameras/${encodeURIComponent(targetId)}`), {
         method: "DELETE",
       });
 
@@ -317,7 +317,7 @@ export default function GisMap({
   const handleQuickSyncSentinel = async () => {
     setSyncingSentinel(true);
     try {
-      const res = await fetch(apiUrl("/api/cameras/sync-sentinel"), {
+      const res = await apiFetch(apiUrl("/api/cameras/sync-sentinel"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ gateway_url: "http://103.250.160.189" })
@@ -355,8 +355,8 @@ export default function GisMap({
       setError("");
       try {
         const [camsRes, deptsRes] = await Promise.all([
-          fetch(apiUrl("/api/cameras")),
-          fetch(apiUrl("/api/departments")),
+          apiFetch(apiUrl("/api/cameras")),
+          apiFetch(apiUrl("/api/departments")),
         ]);
 
         if (!isCancelled) {
@@ -399,8 +399,8 @@ export default function GisMap({
     setError("");
     try {
       const [camsRes, deptsRes] = await Promise.all([
-        fetch(apiUrl("/api/cameras")),
-        fetch(apiUrl("/api/departments")),
+        apiFetch(apiUrl("/api/cameras")),
+        apiFetch(apiUrl("/api/departments")),
       ]);
 
       if (camsRes.ok) {
@@ -426,7 +426,7 @@ export default function GisMap({
   const loadRoutes = async (plateToSelect = null) => {
     setRoutesLoading(true);
     try {
-      const res = await fetch(apiUrl("/api/anpr/routes"));
+      const res = await apiFetch(apiUrl("/api/anpr/routes"));
       if (res.ok) {
         const routesData = await res.json();
         setTrackedRoutes(routesData);
@@ -733,7 +733,7 @@ export default function GisMap({
                 transition: all 0.15s ease;
               "
             >
-              ▶ Watch Feed
+              â–¶ Watch Feed
             </button>
             <button
               type="button"
@@ -757,7 +757,7 @@ export default function GisMap({
                 transition: all 0.15s ease;
               "
             >
-              🗑️ Remove
+              ðŸ—‘ï¸ Remove
             </button>
           </div>
         </div>
@@ -940,7 +940,7 @@ export default function GisMap({
                 className="clear-search"
                 onClick={() => setSearchQuery("")}
               >
-                ✕
+                âœ•
               </button>
             )}
           </div>
@@ -1169,7 +1169,7 @@ export default function GisMap({
                 }}
                 title="Exit route tracking"
               >
-                ✕
+                âœ•
               </button>
             </div>
           ) : (
@@ -1197,7 +1197,7 @@ export default function GisMap({
                     }}
                     title="Exit route tracking"
                   >
-                    ✕
+                    âœ•
                   </button>
                 </div>
               </div>
@@ -1250,7 +1250,7 @@ export default function GisMap({
                         title="Click to fly to checkpoint"
                       >
                         <div className={`timeline-pin ${isSingle ? "single" : isFirst ? "first" : isLast ? "last" : "transit"}`}>
-                          {isSingle ? "📍" : pt.order}
+                          {isSingle ? "ðŸ“" : pt.order}
                         </div>
                         <div className="timeline-content">
                           <div className="timeline-top">
@@ -1609,7 +1609,7 @@ export default function GisMap({
             borderLeft: "4px solid #10b981",
           }}
         >
-          <span>✓</span>
+          <span>âœ“</span>
           <span>{deleteSuccessMsg}</span>
         </div>
       )}

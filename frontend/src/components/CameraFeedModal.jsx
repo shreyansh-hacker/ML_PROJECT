@@ -76,6 +76,7 @@ export default function CameraFeedModal({ camera, onClose }) {
   const [nightVision, setNightVision] = useState(false);
 
   const isLocalWebcam = camera?.source_type === "LOCAL_WEBCAM";
+  const hasServerManagedCredentials = Boolean(camera?.stream_auth_managed);
   const [streamMode, setStreamMode] = useState(isLocalWebcam ? "LOCAL_WEBCAM" : "WEBRTC");
   const [isConnecting, setIsConnecting] = useState(!isLocalWebcam);
 
@@ -169,6 +170,19 @@ export default function CameraFeedModal({ camera, onClose }) {
         }
       };
     } else {
+      if (hasServerManagedCredentials) {
+        setStreamMode("BACKEND_MJPEG");
+        setIsConnecting(false);
+        setNetworkStreamError("");
+        return () => {
+          isCancelled = true;
+          if (readerRef.current) {
+            readerRef.current.close();
+            readerRef.current = null;
+          }
+        };
+      }
+
       // Network CCTV WebRTC Connection
       const parsed = parseRtspUrl(camera?.rtsp_url);
       if (parsed) {
@@ -220,7 +234,7 @@ export default function CameraFeedModal({ camera, onClose }) {
         }
       };
     }
-  }, [camera?.rtsp_url, isLocalWebcam]);
+  }, [camera?.rtsp_url, camera?.stream_auth_managed, hasServerManagedCredentials, isLocalWebcam]);
 
   // 3. PTZ Simulated Action Trigger
   const triggerPtz = (action) => {
@@ -313,7 +327,7 @@ export default function CameraFeedModal({ camera, onClose }) {
 
           <div className="cctv-header-actions">
             {/* PROTOCOL SELECTOR PILLS */}
-            {!isLocalWebcam && (
+            {!isLocalWebcam && !hasServerManagedCredentials && (
               <div className="stream-protocol-pill-group">
                 <button
                   type="button"
@@ -507,6 +521,7 @@ export default function CameraFeedModal({ camera, onClose }) {
               ) : (
                 <img
                   key={streamKey}
+                  crossOrigin="use-credentials"
                   src={apiUrl(`/api/cameras/${camera.camera_code || camera.id}/stream`)}
                   className="live-video-element"
                   alt={`Live Feed - ${camera.camera_code}`}
@@ -576,7 +591,11 @@ export default function CameraFeedModal({ camera, onClose }) {
 
             <div className="footer-meta-item">
               <span>RTSP Stream URL</span>
-              <code>{camera.rtsp_url || "webrtc://local-device/webcam"}</code>
+              <code>
+                {hasServerManagedCredentials
+                  ? "Managed securely by the backend"
+                  : camera.rtsp_url || "webrtc://local-device/webcam"}
+              </code>
             </div>
 
             {camera.latitude && camera.longitude && (

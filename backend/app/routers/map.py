@@ -28,9 +28,11 @@ async def get_cameras_geojson(
                             'id', c.id,
                             'camera_code', c.camera_code,
                             'make_model', c.make_model,
+                            'source_type', c.source_type,
                             'ip_address', c.ip_address,
                             'camera_type', c.camera_type,
                             'status', c.status,
+                            'stream_auth_managed', false,
                             'ageing', c.ageing,
                             'dept_name', d.dept_name,
                             'last_ping_at', c.last_ping_at
@@ -45,7 +47,18 @@ async def get_cameras_geojson(
               AND ($3::text IS NULL OR c.status = $3);
         """
         row = await db.fetchrow(query, dept_id, camera_type, status)
-        return json.loads(row["geojson"])
+        geojson = json.loads(row["geojson"])
+        managed_codes = {
+            str(camera.get("camera_code", "")).lower()
+            for camera in memory_registry.get_all_cameras()
+            if camera.get("credential_id") or camera.get("onvif_device_id")
+        }
+        for feature in geojson.get("features", []):
+            properties = feature.get("properties", {})
+            properties["stream_auth_managed"] = (
+                str(properties.get("camera_code", "")).lower() in managed_codes
+            )
+        return geojson
     
     return memory_registry.get_cameras_geojson()
 

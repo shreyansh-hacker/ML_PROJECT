@@ -5,10 +5,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.config import settings
 from app.db import init_db, close_db
-from app.routers import departments, onboarding, map, health, reports, metadata, validation, stream, anpr
+from app.security import SecurityMiddleware, router as auth_router, validate_security_configuration
+from app.routers import departments, onboarding, map, health, reports, metadata, validation, stream, anpr, onvif
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_security_configuration()
     # Startup: Connect to PostGIS DB Pool
     await init_db()
     yield
@@ -26,13 +28,15 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_cors_origins,
-    allow_origin_regex=r"^https?:\/\/.*$",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 
+app.add_middleware(SecurityMiddleware)
+
 # Attach Routers
+app.include_router(auth_router)
 app.include_router(departments.router)
 app.include_router(onboarding.router)
 app.include_router(map.router)
@@ -42,6 +46,7 @@ app.include_router(metadata.router)
 app.include_router(validation.router)
 app.include_router(stream.router)
 app.include_router(anpr.router)
+app.include_router(onvif.router)
 
 @app.get("/")
 async def root():

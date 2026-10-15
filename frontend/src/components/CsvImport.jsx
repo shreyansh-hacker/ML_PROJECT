@@ -22,7 +22,7 @@ import {
   HelpCircle
 } from "lucide-react";
 import "./CsvImport.css";
-import { apiUrl } from "../utils/apiConfig";
+import { apiFetch, apiUrl } from "../utils/apiConfig";
 
 export default function CsvImport({ onNavigateToMap }) {
   const fileInputRef = useRef(null);
@@ -45,7 +45,7 @@ export default function CsvImport({ onNavigateToMap }) {
   const [importError, setImportError] = useState("");
 
   // Sentinel Gateway 1-Click Sync State
-  const [sentinelGatewayUrl, setSentinelGatewayUrl] = useState("http://103.250.160.189");
+  const [sentinelGatewayUrl, setSentinelGatewayUrl] = useState("https://cctv.corp8.cloud/cameras.json");
   const [isSyncingSentinel, setIsSyncingSentinel] = useState(false);
   const [syncError, setSyncError] = useState("");
 
@@ -55,7 +55,7 @@ export default function CsvImport({ onNavigateToMap }) {
   // 1. Download CSV Template
   const handleDownloadTemplate = async () => {
     try {
-      const response = await fetch(apiUrl("/api/cameras/csv-template"));
+      const response = await apiFetch(apiUrl("/api/cameras/csv-template"));
       if (!response.ok) throw new Error("Template download failed");
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -130,7 +130,7 @@ CAM-GJ-003,Surat Municipal Corporation,PTZ,Axis PTZ Dome,NETWORK_CCTV,103.250.16
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await fetch(apiUrl("/api/cameras/validate-csv"), {
+      const response = await apiFetch(apiUrl("/api/cameras/validate-csv"), {
         method: "POST",
         body: formData,
       });
@@ -153,7 +153,7 @@ CAM-GJ-003,Surat Municipal Corporation,PTZ,Axis PTZ Dome,NETWORK_CCTV,103.250.16
   const revalidateCurrentRows = async (rows) => {
     setIsValidating(true);
     try {
-      const response = await fetch(apiUrl("/api/cameras/validate-records"), {
+      const response = await apiFetch(apiUrl("/api/cameras/validate-records"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ records: rows }),
@@ -250,7 +250,7 @@ CAM-GJ-003,Surat Municipal Corporation,PTZ,Axis PTZ Dome,NETWORK_CCTV,103.250.16
         throw new Error("No valid camera rows to import. Please correct row errors first.");
       }
 
-      const response = await fetch(apiUrl("/api/cameras/bulk-import-json"), {
+      const response = await apiFetch(apiUrl("/api/cameras/bulk-import-json"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cameras: validRowsToImport }),
@@ -296,7 +296,7 @@ CAM-GJ-003,Surat Municipal Corporation,PTZ,Axis PTZ Dome,NETWORK_CCTV,103.250.16
     setSyncError("");
     setImportError("");
     try {
-      const response = await fetch(apiUrl("/api/cameras/sync-sentinel"), {
+      const response = await apiFetch(apiUrl("/api/cameras/sync-sentinel"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ gateway_url: sentinelGatewayUrl }),
@@ -369,21 +369,21 @@ CAM-GJ-003,Surat Municipal Corporation,PTZ,Axis PTZ Dome,NETWORK_CCTV,103.250.16
       {/* 2. STEP WORKFLOW INDICATOR */}
       <div className="csv-workflow-stepper">
         <div className={`step-node ${currentStep === 1 ? "active" : currentStep > 1 ? "completed" : ""}`}>
-          <div className="step-circle">{currentStep > 1 ? "✓" : "1"}</div>
+          <div className="step-circle">{currentStep > 1 ? "âœ“" : "1"}</div>
           <span>Upload CSV</span>
         </div>
 
         <div className={`step-divider ${currentStep > 1 ? "filled" : ""}`}></div>
 
         <div className={`step-node ${currentStep === 2 ? "active" : currentStep > 2 ? "completed" : ""}`}>
-          <div className="step-circle">{currentStep > 2 ? "✓" : "2"}</div>
+          <div className="step-circle">{currentStep > 2 ? "âœ“" : "2"}</div>
           <span>Validate Schema</span>
         </div>
 
         <div className={`step-divider ${currentStep > 2 ? "filled" : ""}`}></div>
 
         <div className={`step-node ${currentStep === 3 ? "active" : currentStep > 3 ? "completed" : ""}`}>
-          <div className="step-circle">{currentStep > 3 ? "✓" : "3"}</div>
+          <div className="step-circle">{currentStep > 3 ? "âœ“" : "3"}</div>
           <span>Preview &amp; Review</span>
         </div>
 
@@ -481,7 +481,9 @@ CAM-GJ-003,Surat Municipal Corporation,PTZ,Axis PTZ Dome,NETWORK_CCTV,103.250.16
               Sync Live Cameras from Sentinel Gateway (/api/ingest)
             </h4>
             <p style={{ margin: 0, fontSize: "12px", color: "#94a3b8" }}>
-              Auto-ingest live sandbox endpoints and coordinates directly from Sentinel Gateway catalogue.
+              Import judge-provided camera feeds from the published catalogue; if catalogue access
+              requires login, use the bundled judge camera list. RTSP credentials stay encrypted on
+              the backend.
             </p>
             {syncError && (
               <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#f87171" }}>
@@ -495,7 +497,7 @@ CAM-GJ-003,Surat Municipal Corporation,PTZ,Axis PTZ Dome,NETWORK_CCTV,103.250.16
               type="text"
               value={sentinelGatewayUrl}
               onChange={(e) => setSentinelGatewayUrl(e.target.value)}
-              placeholder="http://103.250.160.189"
+              placeholder="https://cctv.corp8.cloud/cameras.json"
               className="sentinel-input"
             />
             <button
@@ -562,7 +564,7 @@ CAM-GJ-003,Surat Municipal Corporation,PTZ,Axis PTZ Dome,NETWORK_CCTV,103.250.16
                 </div>
                 <div className="file-meta-text">
                   <strong>{selectedFile.name}</strong>
-                  <span>{(selectedFile.size / 1024).toFixed(1)} KB • Ready for schema validation</span>
+                  <span>{(selectedFile.size / 1024).toFixed(1)} KB â€¢ Ready for schema validation</span>
                 </div>
               </div>
 
@@ -841,7 +843,7 @@ CAM-GJ-003,Surat Municipal Corporation,PTZ,Axis PTZ Dome,NETWORK_CCTV,103.250.16
                             }}
                           />
                         ) : (
-                          <code style={{ fontSize: "11px", color: "#94a3b8" }}>{row.ip_address || "—"}</code>
+                          <code style={{ fontSize: "11px", color: "#94a3b8" }}>{row.ip_address || "â€”"}</code>
                         )}
                       </td>
 
@@ -867,7 +869,7 @@ CAM-GJ-003,Surat Municipal Corporation,PTZ,Axis PTZ Dome,NETWORK_CCTV,103.250.16
                             title={row.rtsp_url}
                             style={{ fontSize: "11px", color: "#cbd5e1", maxWidth: "160px", display: "inline-block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                           >
-                            {row.rtsp_url || "—"}
+                            {row.rtsp_url || "â€”"}
                           </span>
                         )}
                       </td>
@@ -895,8 +897,8 @@ CAM-GJ-003,Surat Municipal Corporation,PTZ,Axis PTZ Dome,NETWORK_CCTV,103.250.16
                           </div>
                         ) : (
                           <span className="coords-text">
-                            {row.latitude !== null && row.latitude !== undefined ? Number(row.latitude).toFixed(4) : "—"},{" "}
-                            {row.longitude !== null && row.longitude !== undefined ? Number(row.longitude).toFixed(4) : "—"}
+                            {row.latitude !== null && row.latitude !== undefined ? Number(row.latitude).toFixed(4) : "â€”"},{" "}
+                            {row.longitude !== null && row.longitude !== undefined ? Number(row.longitude).toFixed(4) : "â€”"}
                           </span>
                         )}
                       </td>

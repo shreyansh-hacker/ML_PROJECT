@@ -12,6 +12,8 @@ from typing import Optional, List, Dict, Any, Generator
 
 import numpy as np
 
+from app.services.onvif_credentials import add_rtsp_credentials, load_credentials
+
 # Ensure PyTorch imports cleanly
 try:
     import torch
@@ -29,8 +31,41 @@ WATCHLIST_FILE = DATA_DIR / "anpr_watchlist.json"
 CAMERAS_FILE = DATA_DIR / "cameras.json"
 
 DEMO_VIDEO_PATH = ANPR_DIR / "test_video.mp4"
+DEMO_VIDEO_SOURCES = {
+    "demo_video": {
+        "id": "demo_video",
+        "name": "Demo Highway Traffic (test_video.mp4)",
+        "location": "NH-48 Ahmedabad-Surat Expressway",
+        "camera_code": "DEMO-01",
+        "video_path": DEMO_VIDEO_PATH,
+        "latitude": 22.5645,
+        "longitude": 72.9289,
+    },
+    "demo_video_2": {
+        "id": "demo_video_2",
+        "name": "Demo Traffic Camera 02 (t.mp4)",
+        "location": "Sample Traffic Corridor 02",
+        "camera_code": "DEMO-02",
+        "video_path": ANPR_DIR / "t.mp4",
+        "latitude": 23.0225,
+        "longitude": 72.5714,
+    },
+}
+DEMO_VIDEO_ALIASES = {
+    "demo-highway": "demo_video",
+    "demo-01": "demo_video",
+    "demo-02": "demo_video_2",
+}
 PLATE_MODEL_PATH = ANPR_DIR / "yolov8n-plate.pt"
 VEHICLE_MODEL_PATH = ANPR_DIR / "yolov8n.pt"
+
+
+def get_demo_video_source(source_id: str) -> Optional[Dict[str, Any]]:
+    """Resolve a bundled demo feed by ID or camera code without accepting file paths."""
+    source_key = str(source_id or "").strip().lower()
+    source_id = DEMO_VIDEO_ALIASES.get(source_key, source_key)
+    return DEMO_VIDEO_SOURCES.get(source_id)
+
 
 # Ensure directories exist
 CROPS_DIR.mkdir(parents=True, exist_ok=True)
@@ -330,6 +365,7 @@ class ANPREngine:
         self.ocr_reader = None
 
         self.is_running = False
+        self.stream_status = "STOPPED"
         self.source_type = "DEMO_VIDEO"  # "DEMO_VIDEO" | "LOCAL_WEBCAM" | "CAMERA"
         self.source_id = "demo_video"
         self.camera_id = "demo_video"
@@ -337,6 +373,8 @@ class ANPREngine:
         self.dept_name = "NH-48 Ahmedabad Expressway"
         self.source_name = "Demo Highway Traffic"
         self.rtsp_url = ""
+        self.stream_credential_id = ""
+        self.camera_metadata = None
 
         self.target_plate = None
         self.catched_event = None
@@ -403,6 +441,15 @@ class ANPREngine:
                 "status": "ONLINE"
             },
             {
+                "id": "demo_video_2",
+                "name": "Demo Traffic Camera 02 (t.mp4)",
+                "source_type": "DEMO_VIDEO",
+                "location": "Sample Traffic Corridor 02",
+                "camera_code": "DEMO-02",
+                "rtsp_url": "",
+                "status": "ONLINE"
+            },
+            {
                 "id": "local_webcam",
                 "name": "💻 Laptop Webcam (Local Device 0)",
                 "source_type": "LOCAL_WEBCAM",
@@ -428,7 +475,12 @@ class ANPREngine:
                             "source_type": "CAMERA",
                             "location": dept,
                             "camera_code": code,
-                            "rtsp_url": rtsp,
+                            "rtsp_url": "",
+                            "stream_auth_managed": bool(
+                                cam.get("credential_id")
+                                or cam.get("onvif_device_id")
+                                or "@" in rtsp.partition("://")[2]
+                            ),
                             "status": cam.get("status", "ONLINE")
                         })
             except Exception as e:
@@ -457,21 +509,40 @@ class ANPREngine:
         except Exception as e:
             logger.error(f"Failed to write anpr_events.json: {e}")
 
-    def start(self, source_type: str, source_id: str = "", source_name: str = "", rtsp_url: str = "") -> Dict[str, Any]:
+    def start(
+        self,
+        source_type: str,
+        source_id: str = "",
+        source_name: str = "",
+        rtsp_url: str = "",
+        camera_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Starts the ANPR inference worker on the selected source."""
+        demo_source = (
+            get_demo_video_source(source_id or "demo_video")
+            if source_type == "DEMO_VIDEO"
+            else None
+        )
+        if source_type == "DEMO_VIDEO" and demo_source is None:
+            raise ValueError(f"Unknown demo video source: {source_id}")
+
         self.stop()
 
         self.source_type = source_type
         self.source_id = source_id or "demo_video"
         self.camera_id = self.source_id
         self.rtsp_url = rtsp_url or ""
+        self.stream_credential_id = ""
+        self.camera_metadata = camera_metadata
 
         if self.source_type == "DEMO_VIDEO":
-            self.camera_code = "DEMO-01"
-            self.dept_name = "NH-48 Ahmedabad Expressway"
-            self.source_name = "Demo Highway Traffic (test_video.mp4)"
-            self.latitude = 22.5645
-            self.longitude = 72.9289
+            self.source_id = demo_source["id"]
+            self.camera_id = demo_source["id"]
+            self.camera_code = demo_source["camera_code"]
+            self.dept_name = demo_source["location"]
+            self.source_name = demo_source["name"]
+            self.latitude = demo_source["latitude"]
+            self.longitude = demo_source["longitude"]
 
         elif self.source_type == "LOCAL_WEBCAM":
             self.camera_code = "WEBCAM-01"
@@ -500,17 +571,36 @@ class ANPREngine:
                             if c_id == s_id or (c_code and c_code == s_id):
                                 if not self.rtsp_url:
                                     self.rtsp_url = c.get("rtsp_url", "")
+                                    self.stream_credential_id = c.get("credential_id", "")
                                 self.camera_code = c.get("camera_code", "CAM")
                                 self.dept_name = c.get("dept_name", "Gujarat CCTV")
                                 self.source_name = f"📷 {self.camera_code} - {self.dept_name}"
-                                self.latitude = float(c.get("latitude", 23.0225))
-                                self.longitude = float(c.get("longitude", 72.5714))
+                                self.latitude = float(c.get("latitude") or 23.0225)
+                                self.longitude = float(c.get("longitude") or 72.5714)
                                 break
                 except Exception as e:
                     logger.warning(f"Error looking up camera {self.source_id}: {e}")
+            if self.stream_credential_id and self.rtsp_url:
+                credentials = load_credentials(self.stream_credential_id)
+                if credentials:
+                    self.rtsp_url = add_rtsp_credentials(
+                        self.rtsp_url,
+                        credentials["username"],
+                        credentials["password"],
+                    )
+            if camera_metadata:
+                self.camera_code = camera_metadata.get("camera_code") or self.camera_code
+                self.dept_name = camera_metadata.get("dept_name") or self.dept_name
+                latitude = camera_metadata.get("latitude")
+                longitude = camera_metadata.get("longitude")
+                if latitude is not None:
+                    self.latitude = float(latitude)
+                if longitude is not None:
+                    self.longitude = float(longitude)
 
         # Reset state & purge any stale frame from previously active camera
         self.fps = 0.0
+        self.stream_status = "CONNECTING"
         self.last_detected_plate = ""
         self.recent_plates = {}
         self.recent_vehicles = {}
@@ -526,12 +616,13 @@ class ANPREngine:
         self._thread = threading.Thread(target=self._worker_loop, daemon=True)
         self._thread.start()
 
-        logger.info(f"ANPR Engine started on camera_id: {self.camera_id}, code: {self.camera_code}, source: {self.source_name} ({self.source_type}) -> RTSP: {self.rtsp_url}")
+        logger.info(f"ANPR Engine started on camera_id: {self.camera_id}, code: {self.camera_code}, source: {self.source_name} ({self.source_type}).")
         return self.get_status()
 
     def stop(self) -> Dict[str, Any]:
         """Stops the active ANPR engine."""
         self.is_running = False
+        self.stream_status = "STOPPED"
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
@@ -543,6 +634,7 @@ class ANPREngine:
         """Returns the current engine status."""
         return {
             "is_running": self.is_running,
+            "stream_status": self.stream_status,
             "source_type": self.source_type,
             "source_id": self.source_id,
             "camera_id": self.camera_id,
@@ -1125,10 +1217,15 @@ class ANPREngine:
     def _open_capture(self) -> Optional[cv2.VideoCapture]:
         """Opens video capture based on source_type."""
         if self.source_type == "DEMO_VIDEO":
-            if not DEMO_VIDEO_PATH.exists():
-                logger.error(f"Demo video file not found at {DEMO_VIDEO_PATH}")
+            demo_source = get_demo_video_source(self.source_id)
+            if demo_source is None:
+                logger.error(f"Unknown demo video source: {self.source_id}")
                 return None
-            return cv2.VideoCapture(str(DEMO_VIDEO_PATH))
+            video_path = demo_source["video_path"]
+            if not video_path.exists():
+                logger.error(f"Demo video file not found at {video_path}")
+                return None
+            return cv2.VideoCapture(str(video_path))
 
         elif self.source_type == "LOCAL_WEBCAM":
             cap = cv2.VideoCapture(0, cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY)
@@ -1194,6 +1291,7 @@ class ANPREngine:
 
         if cap is None or not cap.isOpened():
             logger.error(f"Failed to open capture device/stream: {self.source_name}")
+            self.stream_status = "OFFLINE"
             with self._frame_lock:
                 self.latest_frame_bytes = self._make_status_frame(
                     f"CAMERA OFFLINE: {self.source_name[:26]}",
@@ -1246,6 +1344,7 @@ class ANPREngine:
 
             consecutive_empty = 0
 
+            self.stream_status = "LIVE"
             frame_count += 1
             h, w = frame.shape[:2]
 

@@ -123,6 +123,8 @@ class MemoryRegistry:
             "source_type": camera.source_type or "NETWORK_CCTV",
             "ip_address": camera.ip_address,
             "rtsp_url": camera.rtsp_url,
+            "credential_id": getattr(camera, "credential_id", None),
+            "onvif_device_id": getattr(camera, "onvif_device_id", None),
             "latitude": camera.latitude,
             "longitude": camera.longitude,
             "camera_type": camera.camera_type or "FIXED",
@@ -131,6 +133,7 @@ class MemoryRegistry:
             "codec": getattr(camera, "codec", None) or "H.264",
             "hls_url": getattr(camera, "hls_url", None) or "",
             "http_stream_url": getattr(camera, "http_stream_url", None) or "",
+            "whep_url": getattr(camera, "whep_url", None) or "",
         }
         self.cameras.append(cam_record)
         self._save_cameras()
@@ -141,17 +144,77 @@ class MemoryRegistry:
             "status": cam_record["status"]
         }
 
+    def upsert_camera(self, camera) -> Dict[str, Any]:
+        """Insert a camera or refresh its network details while preserving its registry ID."""
+        camera_code = camera.camera_code.strip()
+        for existing in self.cameras:
+            if existing.get("camera_code", "").lower() != camera_code.lower():
+                continue
+            existing.update(
+                {
+                    "camera_code": camera_code,
+                    "make_model": camera.make_model or "ONVIF Camera",
+                    "source_type": camera.source_type or "NETWORK_CCTV",
+                    "ip_address": camera.ip_address,
+                    "rtsp_url": camera.rtsp_url,
+                    "credential_id": getattr(camera, "credential_id", None),
+                    "onvif_device_id": getattr(camera, "onvif_device_id", None),
+                    "latitude": camera.latitude,
+                    "longitude": camera.longitude,
+                    "camera_type": camera.camera_type or "FIXED",
+                    "status": camera.status or "ONLINE",
+                    "ageing": camera.ageing or 0.0,
+                    "codec": getattr(camera, "codec", None) or "H.264",
+                    "hls_url": getattr(camera, "hls_url", None) or "",
+                    "http_stream_url": getattr(camera, "http_stream_url", None) or "",
+                    "whep_url": getattr(camera, "whep_url", None) or "",
+                }
+            )
+            self._save_cameras()
+            return {
+                "message": "Camera details refreshed",
+                "id": existing["id"],
+                "camera_code": camera_code,
+                "status": existing["status"],
+            }
+        return self.add_camera(camera)
+
     def get_cameras_geojson(self) -> Dict[str, Any]:
         features = []
         for c in self.cameras:
             if c.get("latitude") is not None and c.get("longitude") is not None:
+                public_properties = dict(c)
+                rtsp_url = str(public_properties.get("rtsp_url") or "")
+                if "@" in rtsp_url.partition("://")[2]:
+                    from urllib.parse import urlsplit, urlunsplit
+
+                    parts = urlsplit(rtsp_url)
+                    public_properties["rtsp_url"] = urlunsplit(
+                        (
+                            parts.scheme,
+                            parts.netloc.rsplit("@", 1)[-1],
+                            parts.path,
+                            parts.query,
+                            parts.fragment,
+                        )
+                    )
+                public_properties.pop("credential_id", None)
+                public_properties.pop("onvif_device_id", None)
+                public_properties.pop("hls_url", None)
+                public_properties.pop("http_stream_url", None)
+                public_properties.pop("whep_url", None)
+                public_properties["stream_auth_managed"] = bool(
+                    c.get("credential_id")
+                    or c.get("onvif_device_id")
+                    or "@" in rtsp_url.partition("://")[2]
+                )
                 features.append({
                     "type": "Feature",
                     "geometry": {
                         "type": "Point",
                         "coordinates": [c["longitude"], c["latitude"]]
                     },
-                    "properties": c
+                    "properties": public_properties
                 })
         return {
             "type": "FeatureCollection",
@@ -202,4 +265,3 @@ class MemoryRegistry:
         return False
 
 memory_registry = MemoryRegistry()
-

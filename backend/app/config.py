@@ -7,7 +7,7 @@ class Settings(BaseSettings):
         validation_alias="DATABASE_URL"
     )
     cors_origins: str = Field(
-        default="*",
+        default="",
         validation_alias="CORS_ORIGINS"
     )
     environment: str = Field(
@@ -18,6 +18,24 @@ class Settings(BaseSettings):
         default=8000,
         validation_alias="PORT"
     )
+    onvif_credentials_key: str = Field(
+        default="",
+        validation_alias="ONVIF_CREDENTIALS_KEY"
+    )
+    sentinel_catalogue_url: str = Field(
+        default="https://cctv.corp8.cloud/cameras.json",
+        validation_alias="SENTINEL_CATALOGUE_URL"
+    )
+    sentinel_stream_host: str = Field(
+        default="103.250.160.189",
+        validation_alias="SENTINEL_STREAM_HOST"
+    )
+    sentinel_stream_credentials_json: str = Field(
+        default="",
+        validation_alias="SENTINEL_STREAM_CREDENTIALS_JSON"
+    )
+    admin_password: str = Field(default="", validation_alias="ADMIN_PASSWORD")
+    session_signing_key: str = Field(default="", validation_alias="SESSION_SIGNING_KEY")
     host: str = Field(
         default="0.0.0.0",
         validation_alias="HOST"
@@ -30,18 +48,8 @@ class Settings(BaseSettings):
 
     @property
     def allowed_cors_origins(self) -> list[str]:
-        """Parses comma-separated CORS origins and includes production frontend domains."""
-        origins = [
-            "https://drishtigrid.vercel.app",
-            "http://localhost:5173",
-            "http://127.0.0.1:5173"
-        ]
-        if self.cors_origins and self.cors_origins.strip() != "*":
-            for origin in self.cors_origins.split(","):
-                clean = origin.strip()
-                if clean and clean not in origins and clean != "*":
-                    origins.append(clean)
-        return origins
+        """Return only explicitly configured browser origins."""
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     model_config = SettingsConfigDict(
         env_file=".env",

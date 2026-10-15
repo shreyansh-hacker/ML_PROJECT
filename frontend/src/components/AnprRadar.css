@@ -149,6 +149,29 @@
   background: #0369a1;
 }
 
+.anpr-feed-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 16px 0;
+  padding: 12px 16px;
+  border: 1px solid #92400e;
+  border-radius: 8px;
+  background: #451a03;
+  color: #fef3c7;
+}
+
+.anpr-feed-notice > div {
+  display: grid;
+  gap: 4px;
+}
+
+.anpr-feed-notice span {
+  color: #fde68a;
+  font-size: 13px;
+}
+
 .anpr-action-btn.btn-scan.btn-active {
   background: #dc2626;
   border-color: #b91c1c;
@@ -157,6 +180,328 @@
 
 .anpr-action-btn.btn-scan.btn-active:hover {
   background: #b91c1c;
+}
+
+.onvif-discovery-toggle {
+  background: #172554;
+  color: #bfdbfe;
+  border-color: #1e40af;
+}
+
+.onvif-discovery-toggle:hover {
+  background: #1e3a8a;
+}
+
+.onvif-discovery-panel {
+  width: 100%;
+  min-width: 0;
+  margin: 0 0 22px;
+  padding: 18px;
+  border: 1px solid #1e3a5f;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(8, 47, 73, 0.48));
+}
+
+.onvif-discovery-heading,
+.onvif-device-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.onvif-discovery-heading h3 {
+  margin: 0 0 5px;
+  color: #f8fafc;
+  font-size: 15px;
+}
+
+.onvif-discovery-heading > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.onvif-discovery-heading p {
+  max-width: 780px;
+  margin: 0;
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.onvif-setup-steps {
+  display: grid;
+  gap: 4px;
+  max-width: 840px;
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #cbd5e1;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.onvif-scan-button,
+.onvif-device-auth button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  gap: 7px;
+  min-height: 36px;
+  padding: 8px 13px;
+  border: 1px solid #0369a1;
+  border-radius: 7px;
+  background: #0284c7;
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.onvif-scan-button:disabled,
+.onvif-device-auth button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.onvif-spin {
+  animation: onvifSpin 1s linear infinite;
+}
+
+@keyframes onvifSpin {
+  to { transform: rotate(360deg); }
+}
+
+.onvif-credentials-row,
+.onvif-device-auth,
+.onvif-manual-connect {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.onvif-credentials-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.onvif-credentials-row label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.onvif-manual-connect {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(90px, 0.65fr) minmax(100px, 0.75fr) auto;
+  align-items: end;
+  padding-top: 13px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.onvif-manual-connect label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.onvif-rtsp-credential-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 10px 0 0;
+  color: #cbd5e1;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.onvif-rtsp-credential-toggle input {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: #0284c7;
+}
+
+.onvif-rtsp-credential-toggle span {
+  min-width: 0;
+}
+
+.onvif-credentials-row input,
+.onvif-manual-connect input,
+.onvif-manual-connect select,
+.onvif-device-auth input {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  outline: none;
+  background: #0b1329;
+  color: #f8fafc;
+  font: inherit;
+  font-size: 12px;
+}
+
+.onvif-credentials-row input:focus,
+.onvif-manual-connect input:focus,
+.onvif-manual-connect select:focus,
+.onvif-device-auth input:focus {
+  border-color: #38bdf8;
+}
+
+.onvif-notice {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.onvif-empty-state {
+  padding: 12px 14px;
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  border-radius: 8px;
+  background: rgba(30, 64, 175, 0.12);
+  color: #bfdbfe;
+}
+
+.onvif-empty-state strong {
+  display: block;
+  margin-bottom: 5px;
+  color: #dbeafe;
+}
+
+.onvif-empty-state p {
+  margin: 0;
+}
+
+.onvif-empty-state ol {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.onvif-notice-success { color: #86efac; }
+.onvif-notice-error { color: #fca5a5; }
+.onvif-notice-info { color: #93c5fd; }
+
+.onvif-device-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.onvif-device-card {
+  padding: 11px 12px;
+  border: 1px solid #26364f;
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.45);
+}
+
+.onvif-device-summary strong,
+.onvif-device-summary span,
+.onvif-device-summary small {
+  display: block;
+}
+
+.onvif-device-summary strong {
+  color: #e2e8f0;
+  font-size: 12px;
+}
+
+.onvif-device-summary span {
+  margin-top: 3px;
+  color: #94a3b8;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.onvif-device-summary small {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.onvif-device-status {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 20px;
+  font-size: 9px !important;
+  font-family: inherit !important;
+  font-weight: 800;
+  letter-spacing: 0.35px;
+}
+
+.onvif-device-status.is-ready {
+  background: rgba(34, 197, 94, 0.12);
+  color: #86efac;
+}
+
+.onvif-device-status.needs-auth {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fcd34d;
+}
+
+.onvif-device-auth {
+  align-items: center;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.onvif-device-auth > svg {
+  flex: 0 0 auto;
+  color: #93c5fd;
+}
+
+.onvif-device-auth input {
+  flex: 1 1 160px;
+}
+
+@media (max-width: 700px) {
+  .onvif-credentials-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .onvif-manual-connect {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .onvif-discovery-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .onvif-scan-button {
+    align-self: flex-start;
+  }
+
+  .onvif-device-summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 460px) {
+  .onvif-discovery-panel {
+    padding: 14px;
+  }
+
+  .onvif-credentials-row,
+  .onvif-manual-connect {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* ------------------------------------------------------------

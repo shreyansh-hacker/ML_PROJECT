@@ -12,6 +12,8 @@ venv.bak/
 
 # Environment variables & secrets
 .env
+/data/onvif_credentials.json
+/data/.onvif-credentials-*.tmp
 .env.local
 .env.*.local
 

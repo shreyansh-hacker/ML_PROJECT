@@ -20,7 +20,7 @@ import {
   FileSpreadsheet
 } from "lucide-react";
 import "./DetectionInvestigation.css";
-import { apiUrl } from "../utils/apiConfig";
+import { apiFetch, apiUrl } from "../utils/apiConfig";
 
 function AutoRickshawIcon({ size = 15 }) {
   return (
@@ -134,7 +134,7 @@ export default function DetectionInvestigation({ onTrackOnMap, onOpenAnpr }) {
       params.append("page", targetPage);
       params.append("page_size", pageSize);
 
-      const res = await fetch(apiUrl(`/api/anpr/investigation/search?${params.toString()}`));
+      const res = await apiFetch(apiUrl(`/api/anpr/investigation/search?${params.toString()}`));
       if (res.ok) {
         const data = await res.json();
         setItems(data.items || []);
@@ -423,6 +423,7 @@ export default function DetectionInvestigation({ onTrackOnMap, onOpenAnpr }) {
                         <div className="crop-thumb-box">
                           {item.crop_url ? (
                             <img
+                              crossOrigin="use-credentials"
                               src={apiUrl(item.crop_url)}
                               alt={item.plate_number}
                               className="crop-thumb-img"
@@ -481,7 +482,7 @@ export default function DetectionInvestigation({ onTrackOnMap, onOpenAnpr }) {
 
                       {/* TIMESTAMP */}
                       <td style={{ fontSize: "11px", color: "#94a3b8", fontFamily: "monospace" }}>
-                        {item.timestamp ? item.timestamp.replace("T", " ").slice(0, 19) : "—"}
+                        {item.timestamp ? item.timestamp.replace("T", " ").slice(0, 19) : "â€”"}
                       </td>
 
                       {/* WATCHLIST STATUS */}
@@ -583,7 +584,7 @@ export default function DetectionInvestigation({ onTrackOnMap, onOpenAnpr }) {
             <div className="modal-header">
               <h4>
                 <Info size={16} color="#38bdf8" />
-                <span>Detection Event Details — {selectedEvent.event_id}</span>
+                <span>Detection Event Details â€” {selectedEvent.event_id}</span>
               </h4>
               <button
                 type="button"
@@ -599,6 +600,7 @@ export default function DetectionInvestigation({ onTrackOnMap, onOpenAnpr }) {
               <div className="detail-crop-preview">
                 {selectedEvent.crop_url ? (
                   <img
+                    crossOrigin="use-credentials"
                     src={apiUrl(selectedEvent.crop_url)}
                     alt={selectedEvent.plate_number}
                   />

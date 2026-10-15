@@ -7,3 +7,6 @@ backend/data/anpr_crops/*.jpg
 *.py[cod]
 .env
 .env.*
+backend/.env
+backend/.env.*
+backend/data/onvif_credentials.json

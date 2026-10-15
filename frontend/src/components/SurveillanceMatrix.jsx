@@ -20,7 +20,7 @@ import {
   WifiOff
 } from "lucide-react";
 import "./SurveillanceMatrix.css";
-import { apiUrl } from "../utils/apiConfig";
+import { apiFetch, apiUrl } from "../utils/apiConfig";
 
 export default function SurveillanceMatrix({ onOpenDetailedView, onNavigateToOnboarding }) {
   const [cameras, setCameras] = useState([]);
@@ -28,6 +28,7 @@ export default function SurveillanceMatrix({ onOpenDetailedView, onNavigateToOnb
   const [layout, setLayout] = useState("2x2"); // "2x2" | "3x3" | "1+3"
   const [selectedSlots, setSelectedSlots] = useState({}); // slotIndex -> camera object
   const [streamErrors, setStreamErrors] = useState({}); // slotIndex -> boolean
+  const [streamRetryTokens, setStreamRetryTokens] = useState({});
   const [currentTime, setCurrentTime] = useState(new Date().toUTCString());
   const [fullscreenTile, setFullscreenTile] = useState(null); // slotIndex | null
   const localVideoRefs = useRef({});
@@ -40,8 +41,8 @@ export default function SurveillanceMatrix({ onOpenDetailedView, onNavigateToOnb
       try {
         // Fetch both registered cameras and anpr sources for complete fleet
         const [camsRes, sourcesRes] = await Promise.all([
-          fetch(apiUrl("/api/cameras")).catch(() => null),
-          fetch(apiUrl("/api/anpr/sources")).catch(() => null),
+          apiFetch(apiUrl("/api/cameras")).catch(() => null),
+          apiFetch(apiUrl("/api/anpr/sources")).catch(() => null),
         ]);
 
         let combined = [];
@@ -53,8 +54,10 @@ export default function SurveillanceMatrix({ onOpenDetailedView, onNavigateToOnb
           if (Array.isArray(sData)) {
             sData.forEach((s) => {
               const uid = String(s.id || s.camera_code);
-              if (!seenIds.has(uid)) {
+              const cameraCode = String(s.camera_code || "");
+              if (!seenIds.has(uid) && (!cameraCode || !seenIds.has(cameraCode))) {
                 seenIds.add(uid);
+                if (cameraCode) seenIds.add(cameraCode);
                 combined.push({
                   id: s.id,
                   camera_code: s.camera_code || "DEMO",
@@ -73,15 +76,28 @@ export default function SurveillanceMatrix({ onOpenDetailedView, onNavigateToOnb
         // Add registered cameras
         if (camsRes && camsRes.ok) {
           const cData = await camsRes.json();
-          const camList = Array.isArray(cData) ? cData : (cData.cameras || []);
+          const camList = Array.isArray(cData)
+            ? cData
+            : Array.isArray(cData.cameras)
+            ? cData.cameras
+            : Array.isArray(cData.features)
+            ? cData.features.map((feature) => ({
+                ...feature.properties,
+                latitude: feature.geometry?.coordinates?.[1],
+                longitude: feature.geometry?.coordinates?.[0],
+              }))
+            : [];
           camList.forEach((c) => {
             const uid = String(c.id || c.camera_code);
-            if (!seenIds.has(uid)) {
+            const cameraCode = String(c.camera_code || "");
+            if (!seenIds.has(uid) && (!cameraCode || !seenIds.has(cameraCode))) {
               seenIds.add(uid);
+              if (cameraCode) seenIds.add(cameraCode);
               combined.push({
                 ...c,
                 id: c.id || c.camera_code,
                 dept_name: c.dept_name || "Gujarat CCTV",
+                source_type: c.source_type || "NETWORK_CCTV",
                 status: c.status || "ONLINE",
               });
             }
@@ -151,6 +167,22 @@ export default function SurveillanceMatrix({ onOpenDetailedView, onNavigateToOnb
       });
     };
   }, [selectedSlots]);
+
+  // A stream response can stay open even when its camera never emits a frame.
+  useEffect(() => {
+    const timers = Object.entries(selectedSlots)
+      .filter(([, cam]) => cam && cam.source_type !== "LOCAL_WEBCAM")
+      .map(([slotIdx]) =>
+        setTimeout(() => {
+          const image = streamImgRefs.current[slotIdx];
+          if (image && image.naturalWidth === 0) {
+            setStreamErrors((previous) => ({ ...previous, [slotIdx]: true }));
+          }
+        }, 15000)
+      );
+
+    return () => timers.forEach(clearTimeout);
+  }, [selectedSlots, streamRetryTokens]);
 
   // Cleanup image connections on unmount
   useEffect(() => {
@@ -246,12 +278,10 @@ export default function SurveillanceMatrix({ onOpenDetailedView, onNavigateToOnb
 
   const handleRetryStream = (slotIdx) => {
     setStreamErrors((prev) => ({ ...prev, [slotIdx]: false }));
-    const img = streamImgRefs.current[slotIdx];
-    const cam = selectedSlots[slotIdx];
-    if (img && cam) {
-      const srcId = encodeURIComponent(cam.id || cam.camera_code);
-      img.src = apiUrl(`/api/cameras/${srcId}/stream?t=${Date.now()}`);
-    }
+    setStreamRetryTokens((previous) => ({
+      ...previous,
+      [slotIdx]: (previous[slotIdx] || 0) + 1,
+    }));
   };
 
   // Clicking a camera opens detailed view in ANPR
@@ -398,7 +428,7 @@ export default function SurveillanceMatrix({ onOpenDetailedView, onNavigateToOnb
                         </span>
                       </>
                     ) : (
-                      <span className="empty-slot-label">Slot #{slotIdx + 1} — Standby</span>
+                      <span className="empty-slot-label">Slot #{slotIdx + 1} â€” Standby</span>
                     )}
                   </div>
 
@@ -483,9 +513,19 @@ export default function SurveillanceMatrix({ onOpenDetailedView, onNavigateToOnb
                       ) : (
                         <img
                           ref={(el) => (streamImgRefs.current[slotIdx] = el)}
-                          src={apiUrl(`/api/cameras/${encodeURIComponent(cam.id || cam.camera_code)}/stream`)}
+                          crossOrigin="use-credentials"
+                          src={apiUrl(
+                            `/api/cameras/${encodeURIComponent(cam.id || cam.camera_code)}/stream?retry=${streamRetryTokens[slotIdx] || 0}`
+                          )}
                           alt={cam.camera_code}
                           className="tile-stream-img"
+                          onLoad={() => {
+                            setStreamErrors((previous) =>
+                              previous[slotIdx]
+                                ? { ...previous, [slotIdx]: false }
+                                : previous
+                            );
+                          }}
                           onError={() => {
                             setStreamErrors((prev) => ({ ...prev, [slotIdx]: true }));
                           }}

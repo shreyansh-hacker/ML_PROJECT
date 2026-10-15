@@ -27,7 +27,7 @@ import CameraFeedModal from "./components/CameraFeedModal";
 import AnprRadar from "./components/AnprRadar";
 import SurveillanceMatrix from "./components/SurveillanceMatrix";
 import DetectionInvestigation from "./components/DetectionInvestigation";
-import { apiUrl, API_BASE_URL } from "./utils/apiConfig";
+import { apiFetch, apiUrl, API_BASE_URL } from "./utils/apiConfig";
 import "./App.css";
 
 const fallbackDepartments = [
@@ -57,6 +57,11 @@ const emptyCamera = {
 };
 
 function App() {
+  const [authReady, setAuthReady] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [activeTab, setActiveTab] = useState("onboarding"); // "onboarding" | "bulk_csv" | "map" | "video_wall" | "anpr" | "investigation"
   const [step, setStep] = useState(1);
   const [gisTrackPlate, setGisTrackPlate] = useState(null);
@@ -95,15 +100,72 @@ function App() {
 
   const videoRef = useRef(null);
 
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch(apiUrl("/api/auth/session"))
+      .then((response) => response.json())
+      .then((data) => {
+        if (!cancelled) {
+          setIsAuthenticated(Boolean(data.authenticated));
+          setAuthReady(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAuthReady(true);
+      });
+    const handleUnauthorized = () => setIsAuthenticated(false);
+    window.addEventListener("sentinel:unauthorized", handleUnauthorized);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("sentinel:unauthorized", handleUnauthorized);
+    };
+  }, []);
+
+  const handleLogin = async (event) => {
+    event.preventDefault();
+    setIsLoggingIn(true);
+    setLoginError("");
+    try {
+      const response = await apiFetch(apiUrl("/api/auth/login"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: loginPassword })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setLoginError(data.detail || "Login failed.");
+        return;
+      }
+      setLoginPassword("");
+      setIsAuthenticated(true);
+    } catch {
+      setLoginError("Could not reach the security service. Check that the backend is running.");
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      const response = await apiFetch(apiUrl("/api/auth/logout"), { method: "POST" });
+      if (!response.ok) throw new Error("The server could not end the secure session.");
+      setIsAuthenticated(false);
+      setActiveTab("onboarding");
+    } catch (logoutError) {
+      console.error("Failed to end the secure session:", logoutError);
+    }
+  };
+
   // 1. Fetch departments and check backend health on mount with auto-retry and keep-alive heartbeat
   useEffect(() => {
+    if (!authReady || !isAuthenticated) return undefined;
     let isCancelled = false;
     let retryTimer = null;
     let heartbeatTimer = null;
 
     async function loadInitialData() {
       try {
-        const response = await fetch(apiUrl("/api/departments"));
+        const response = await apiFetch(apiUrl("/api/departments"));
         if (!isCancelled && response.ok) {
           const data = await response.json();
           setBackendOnline(true);
@@ -135,7 +197,7 @@ function App() {
     // Heartbeat ping every 30s to keep Render free-tier instance warm while user has tab open
     heartbeatTimer = setInterval(async () => {
       try {
-        const res = await fetch(apiUrl("/health"));
+        const res = await apiFetch(apiUrl("/health"));
         if (!isCancelled) {
           setBackendOnline(res.ok);
         }
@@ -149,7 +211,7 @@ function App() {
       if (retryTimer) clearTimeout(retryTimer);
       if (heartbeatTimer) clearInterval(heartbeatTimer);
     };
-  }, []);
+  }, [authReady, isAuthenticated]);
 
   const updateCamera = (field, value) => {
     setCamera((previous) => ({
@@ -177,7 +239,7 @@ function App() {
     setIpCheckResult(null);
 
     try {
-      const response = await fetch(apiUrl("/api/cameras/validate-ip"), {
+      const response = await apiFetch(apiUrl("/api/cameras/validate-ip"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -327,7 +389,7 @@ function App() {
     }
 
     try {
-      const response = await fetch(apiUrl("/api/departments"), {
+      const response = await apiFetch(apiUrl("/api/departments"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dept_name: name, zone_code: code }),
@@ -425,7 +487,7 @@ function App() {
     };
 
     try {
-      const response = await fetch(apiUrl("/api/cameras/manual"), {
+      const response = await apiFetch(apiUrl("/api/cameras/manual"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -468,6 +530,37 @@ function App() {
     setError("");
     setStep(1);
   };
+
+  if (!authReady) {
+    return <main className="auth-loading">Checking secure sessionâ€¦</main>;
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <main className="auth-screen">
+        <form className="auth-card" onSubmit={handleLogin}>
+          <div className="auth-brand-symbol">GS</div>
+          <p className="auth-eyebrow">SECURE ACCESS</p>
+          <h1>Gujarat Sentinel</h1>
+          <p className="auth-description">Sign in to access camera feeds and surveillance controls.</p>
+          <label htmlFor="admin-password">Administrator password</label>
+          <input
+            id="admin-password"
+            type="password"
+            autoComplete="current-password"
+            value={loginPassword}
+            onChange={(event) => setLoginPassword(event.target.value)}
+            required
+            autoFocus
+          />
+          {loginError && <p className="auth-error" role="alert">{loginError}</p>}
+          <button type="submit" disabled={isLoggingIn}>
+            {isLoggingIn ? "Signing inâ€¦" : "Sign in"}
+          </button>
+        </form>
+      </main>
+    );
+  }
 
   return (
     <div className="onboarding-app">
@@ -569,7 +662,7 @@ function App() {
               onClick={async () => {
                 setBackendOnline(null);
                 try {
-                  const r = await fetch(apiUrl("/api/departments"));
+                  const r = await apiFetch(apiUrl("/api/departments"));
                   if (r.ok) {
                     const data = await r.json();
                     setBackendOnline(true);
@@ -601,6 +694,9 @@ function App() {
               <RefreshCw size={11} /> Retry
             </button>
           )}
+          <button type="button" className="auth-logout-button" onClick={handleLogout}>
+            Sign out
+          </button>
         </div>
       </header>
 
@@ -966,7 +1062,7 @@ function App() {
                       updateCamera("longitude", "72.5714");
                     }}
                   >
-                    📍 Ahmedabad HQ
+                    ðŸ“ Ahmedabad HQ
                   </button>
                   <button
                     type="button"
@@ -976,7 +1072,7 @@ function App() {
                       updateCamera("longitude", "72.6369");
                     }}
                   >
-                    📍 Gandhinagar Capital
+                    ðŸ“ Gandhinagar Capital
                   </button>
                   <button
                     type="button"
@@ -986,7 +1082,7 @@ function App() {
                       updateCamera("longitude", "72.8311");
                     }}
                   >
-                    📍 Surat Central
+                    ðŸ“ Surat Central
                   </button>
                 </div>
               </div>

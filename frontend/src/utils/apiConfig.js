@@ -33,4 +33,19 @@ export function apiUrl(path = "") {
   return `${API_BASE_URL}${cleanPath}`;
 }
 
+export async function apiFetch(input, options = {}) {
+  const response = await fetch(input, {
+    ...options,
+    credentials: "include"
+  });
+  if (
+    response.status === 401 &&
+    !String(input).includes("/api/auth/login") &&
+    !String(input).includes("/api/auth/session")
+  ) {
+    window.dispatchEvent(new Event("sentinel:unauthorized"));
+  }
+  return response;
+}
+
 export default apiUrl;

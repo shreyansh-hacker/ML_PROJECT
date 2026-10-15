@@ -1,15 +1,22 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, status
+import asyncio
 import os
 import csv
 import io
+import json
+import hashlib
+import logging
+import re
 from uuid import UUID
 from typing import Optional
 from app.db import get_optional_pool
 from app.schemas.cameras import CameraCreate
 from app.store import memory_registry
+from app.services.onvif_credentials import delete_credentials
 import asyncpg
 
 router = APIRouter(prefix="/api/cameras", tags=["1. Camera Onboarding"])
+logger = logging.getLogger(__name__)
 
 @router.post("/manual", status_code=status.HTTP_201_CREATED)
 async def create_camera_manual(camera: CameraCreate, db: Optional[asyncpg.Pool] = Depends(get_optional_pool)):
@@ -109,7 +116,12 @@ async def create_camera_manual(camera: CameraCreate, db: Optional[asyncpg.Pool] 
 @router.delete("/{camera_id}", status_code=status.HTTP_200_OK)
 async def delete_camera(camera_id: str, db: Optional[asyncpg.Pool] = Depends(get_optional_pool)):
     """Delete a camera from the registry by ID or camera_code"""
-    deleted_from_memory = memory_registry.delete_camera(camera_id)
+    camera = memory_registry.get_camera_by_id(camera_id)
+    credential_ids = {
+        str(camera.get(key))
+        for key in ("credential_id", "onvif_device_id")
+        if camera and camera.get(key)
+    }
 
     if db is not None:
         try:
@@ -123,6 +135,17 @@ async def delete_camera(camera_id: str, db: Optional[asyncpg.Pool] = Depends(get
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to delete camera from database: {str(exc)}"
             )
+
+    memory_registry.delete_camera(camera_id)
+    for credential_id in credential_ids:
+        try:
+            delete_credentials(credential_id)
+        except RuntimeError as exc:
+            logger.exception("Failed to remove stored credentials for camera %s.", camera_id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Camera was removed, but its stored credentials could not be cleaned up.",
+            ) from exc
 
     return {
         "message": f"Camera '{camera_id}' removed successfully.",
@@ -438,48 +461,111 @@ async def sync_sentinel_grid(payload: Optional[dict] = None, db: Optional[asyncp
     """
     import httpx
     from types import SimpleNamespace
+    from urllib.parse import urlsplit
+    from app.config import settings
+    from app.services.onvif_credentials import save_credentials, split_rtsp_credentials
 
     payload = payload or {}
-    raw_gateway = str(payload.get("gateway_url") or "http://103.250.160.189").strip()
+    raw_gateway = str(payload.get("gateway_url") or settings.sentinel_catalogue_url).strip()
     dept_name = str(payload.get("dept_name") or "Gujarat Police - Sentinel Grid").strip()
-
-    # Normalize gateway URL
-    gateway_clean = raw_gateway.rstrip("/")
-    if not gateway_clean.startswith("http://") and not gateway_clean.startswith("https://"):
-        gateway_clean = "http://" + gateway_clean
-
-    ingest_url = gateway_clean if gateway_clean.endswith("/api/ingest") else f"{gateway_clean}/api/ingest"
 
     remote_cameras = []
     fetch_source = "LIVE_CATALOGUE"
+    catalogue_errors = []
+    if not raw_gateway.startswith(("http://", "https://")):
+        raw_gateway = f"https://{raw_gateway}"
+    gateway_parts = urlsplit(raw_gateway)
+    if gateway_parts.scheme not in {"http", "https"} or not gateway_parts.hostname:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Catalogue URL must be an HTTP or HTTPS URL.",
+        )
+    allowed_catalogue_hosts = {
+        urlsplit(settings.sentinel_catalogue_url).hostname,
+        settings.sentinel_stream_host,
+    }
+    if gateway_parts.hostname.lower() not in {
+        host.lower() for host in allowed_catalogue_hosts if host
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Catalogue host is not in the configured Sentinel camera service allowlist.",
+        )
+    if gateway_parts.username or gateway_parts.password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Do not put credentials in the catalogue URL.",
+        )
 
-    # 1. Query remote /api/ingest
-    try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            resp = await client.get(ingest_url)
-            if resp.status_code == 200:
-                data = resp.json()
+    if gateway_parts.path.rstrip("/").endswith((".json", "/api/ingest")):
+        catalogue_urls = [raw_gateway.rstrip("/")]
+        base_url = f"{gateway_parts.scheme}://{gateway_parts.netloc}"
+        if gateway_parts.path.rstrip("/").endswith(".json"):
+            catalogue_urls.append(f"{base_url}/api/ingest")
+        else:
+            catalogue_urls.insert(0, f"{base_url}/cameras.json")
+    else:
+        base_url = raw_gateway.rstrip("/")
+        catalogue_urls = [f"{base_url}/cameras.json", f"{base_url}/api/ingest"]
+
+    # Query the judges' published camera catalogue before using the bundled camera feed list.
+    async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
+        for catalogue_url in dict.fromkeys(catalogue_urls):
+            try:
+                response = await client.get(catalogue_url)
+                if response.status_code != 200:
+                    catalogue_errors.append(
+                        f"{catalogue_url}: HTTP {response.status_code}"
+                    )
+                    continue
+                data = response.json()
                 if isinstance(data, list):
                     remote_cameras = data
                 elif isinstance(data, dict):
-                    remote_cameras = data.get("cameras") or data.get("data") or data.get("items") or []
-    except Exception:
-        pass
+                    remote_cameras = (
+                        data.get("cameras") or data.get("data") or data.get("items") or []
+                    )
+                if isinstance(remote_cameras, list) and remote_cameras:
+                    fetch_source = f"LIVE_CATALOGUE:{catalogue_url}"
+                    break
+                remote_cameras = []
+                catalogue_errors.append(f"{catalogue_url}: empty camera list")
+            except (httpx.HTTPError, ValueError) as exc:
+                catalogue_errors.append(
+                    f"{catalogue_url}: {type(exc).__name__}"
+                )
 
-    # 2. Resilient Fallback: If sandbox gateway is offline, seed with official Gujarat Sentinel Grid dataset
+    # Use the judge-provided camera list when the catalogue requires a login or is unavailable.
     if not remote_cameras:
         fetch_source = "SANDBOX_CATALOGUE_FALLBACK"
+        try:
+            stream_credentials = json.loads(
+                settings.sentinel_stream_credentials_json or "{}"
+            )
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="SENTINEL_STREAM_CREDENTIALS_JSON must be a valid JSON object.",
+            ) from exc
+        if not isinstance(stream_credentials, dict):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="SENTINEL_STREAM_CREDENTIALS_JSON must be a JSON object keyed by camera ID.",
+            )
         sample_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "cameras_sample.csv")
         if os.path.exists(sample_path):
             with open(sample_path, "r", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
-                idx = 1
                 for row in reader:
-                    cam_id = row.get("camera_code", f"CAM{idx:02d}")
-                    # Assign mixed H.264 and H.265 as specified in official challenge rules
-                    codec = "H.265" if (idx % 3 == 0) else "H.264"
-                    rtsp = row.get("rtsp_url") or f"rtsp://shreyanshsharma049@gmail.com:ETD6-KZJG-VGF4@103.250.160.189:8554/stream/{cam_id.lower()}"
-                    host_ip = "103.250.160.189"
+                    cam_id = row.get("camera_code", "")
+                    codec = row.get("codec") or "H.264"
+                    rtsp = row.get("rtsp_url") or ""
+                    host_ip = settings.sentinel_stream_host
+                    row_credentials = stream_credentials.get(cam_id) or stream_credentials.get(
+                        cam_id.lower(), {}
+                    )
+                    if not isinstance(row_credentials, dict):
+                        row_credentials = {}
                     remote_cameras.append({
                         "id": cam_id,
                         "camera_code": cam_id,
@@ -493,20 +579,32 @@ async def sync_sentinel_grid(payload: Optional[dict] = None, db: Optional[asyncp
                         "make_model": row.get("make_model", f"Sentinel {codec} Unit"),
                         "dept_name": f"Gujarat Police - {row.get('dept_name', 'State Grid')}",
                         "rtsp_url": rtsp,
-                        "hls_url": f"http://{host_ip}:8888/stream/{cam_id.lower()}/index.m3u8",
-                        "http_stream_url": f"http://{host_ip}/stream/{cam_id.lower()}",
+                        "username": row_credentials.get("username"),
+                        "password": row_credentials.get("password"),
+                        "hls_url": f"https://cctv.corp8.cloud/{cam_id.lower()}/index.m3u8",
+                        "whep_url": f"http://{host_ip}:8889/stream/{cam_id.lower()}/whep",
                         "ip_address": host_ip
                     })
-                    idx += 1
 
-    # 3. Synchronize / Upsert into MemoryRegistry
+    if not remote_cameras:
+        detail = "No camera catalogue was available and the bundled camera list is empty."
+        if catalogue_errors:
+            detail = f"{detail} Catalogue errors: {'; '.join(catalogue_errors)}"
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+
+    # Synchronize endpoints while keeping camera credentials encrypted and server-side.
     synced_cameras = []
     h264_count = 0
     h265_count = 0
+    skipped_cameras = []
 
     for cam in remote_cameras:
+        if not isinstance(cam, dict):
+            skipped_cameras.append("Catalogue entry was not an object.")
+            continue
         cam_code = str(cam.get("camera_code") or cam.get("id") or "").strip()
-        if not cam_code:
+        if not cam_code or not re.fullmatch(r"[A-Za-z0-9_-]+", cam_code):
+            skipped_cameras.append("Catalogue camera entry had no ID.")
             continue
 
         loc = cam.get("location") or {}
@@ -528,11 +626,50 @@ async def sync_sentinel_grid(payload: Optional[dict] = None, db: Optional[asyncp
             codec = "H.264"
 
         rtsp = cam.get("rtsp_url") or cam.get("rtsp") or ""
-        hls = cam.get("hls_url") or cam.get("hls") or ""
-        http_stream = cam.get("http_stream_url") or cam.get("stream_url") or cam.get("browser_url") or ""
+        camera_id = str(cam.get("id") or cam_code).strip().lower()
+        if not re.fullmatch(r"[a-z0-9_-]+", camera_id):
+            skipped_cameras.append(f"{cam_code}: catalogue camera ID is invalid.")
+            continue
+        host_ip = settings.sentinel_stream_host.strip()
+        if not rtsp:
+            rtsp = f"rtsp://{host_ip}:8554/stream/{camera_id}"
+        hls = f"https://cctv.corp8.cloud/{camera_id}/index.m3u8"
+        whep = f"http://{host_ip}:8889/stream/{camera_id}/whep"
+        try:
+            rtsp, uri_username, uri_password = split_rtsp_credentials(rtsp)
+        except ValueError as exc:
+            skipped_cameras.append(f"{cam_code}: {exc}")
+            continue
+        rtsp_parts = urlsplit(rtsp)
+        if (
+            rtsp_parts.scheme not in {"rtsp", "rtsps"}
+            or not rtsp_parts.hostname
+            or rtsp_parts.hostname.lower() != host_ip.lower()
+        ):
+            skipped_cameras.append(
+                f"{cam_code}: RTSP URL must point to its declared catalogue camera host."
+            )
+            continue
+        username = str(cam.get("username") or uri_username or "")
+        password = str(cam.get("password") or uri_password or "")
+        credential_id = f"sentinel:{cam_code}"
+        if username or password:
+            if not username or not password:
+                skipped_cameras.append(f"{cam_code}: incomplete stream credentials.")
+                continue
+            try:
+                await asyncio.to_thread(
+                    save_credentials, credential_id, username, password
+                )
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Could not securely save credentials for camera {cam_code}: {exc}",
+                ) from exc
 
         cam_dept = cam.get("dept_name") or dept_name
-        cam_status = str(cam.get("live_status") or cam.get("status") or "ONLINE").upper()
+        raw_status = str(cam.get("live_status") or cam.get("status") or "ONLINE").upper()
+        cam_status = raw_status if raw_status in {"ONLINE", "OFFLINE", "MAINTENANCE"} else "ONLINE"
 
         cam_obj = SimpleNamespace(
             dept_id=None,
@@ -540,10 +677,12 @@ async def sync_sentinel_grid(payload: Optional[dict] = None, db: Optional[asyncp
             camera_code=cam_code,
             make_model=cam.get("make_model") or f"Sentinel {codec} Camera",
             source_type="NETWORK_CCTV",
-            ip_address=cam.get("ip_address") or "103.250.160.189",
+            ip_address=host_ip,
             rtsp_url=rtsp,
             hls_url=hls,
-            http_stream_url=http_stream,
+            http_stream_url="",
+            whep_url=whep,
+            credential_id=credential_id if username and password else None,
             codec=codec,
             latitude=lat,
             longitude=lon,
@@ -553,18 +692,70 @@ async def sync_sentinel_grid(payload: Optional[dict] = None, db: Optional[asyncp
         )
 
         try:
-            memory_registry.delete_camera(cam_code)
-            memory_registry.add_camera(cam_obj)
+            existing_camera = memory_registry.get_camera_by_id(cam_code)
+            if existing_camera:
+                memory_registry.upsert_camera(cam_obj)
+            else:
+                memory_registry.add_camera(cam_obj)
+
+            if db is not None:
+                department_id = await db.fetchval(
+                    """
+                    INSERT INTO departments (dept_name, zone_code)
+                    VALUES ($1, $2)
+                    ON CONFLICT (dept_name) DO UPDATE SET zone_code = EXCLUDED.zone_code
+                    RETURNING id
+                    """,
+                    cam_dept,
+                    f"SENTINEL-{hashlib.sha256(cam_dept.lower().encode()).hexdigest()[:12].upper()}",
+                )
+                await db.execute(
+                    """
+                    INSERT INTO cameras (
+                        dept_id, camera_code, make_model, source_type, ip_address,
+                        rtsp_url, location, camera_type, status, ageing
+                    )
+                    VALUES (
+                        $1, $2, $3, 'NETWORK_CCTV', $4, $5,
+                        ST_SetSRID(ST_MakePoint($6, $7), 4326),
+                        $8, $9, $10
+                    )
+                    ON CONFLICT (camera_code) DO UPDATE SET
+                        dept_id = EXCLUDED.dept_id,
+                        make_model = EXCLUDED.make_model,
+                        source_type = EXCLUDED.source_type,
+                        ip_address = EXCLUDED.ip_address,
+                        rtsp_url = EXCLUDED.rtsp_url,
+                        location = EXCLUDED.location,
+                        camera_type = EXCLUDED.camera_type,
+                        status = EXCLUDED.status,
+                        ageing = EXCLUDED.ageing,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    department_id,
+                    cam_code,
+                    cam_obj.make_model,
+                    host_ip,
+                    rtsp,
+                    lon,
+                    lat,
+                    cam_obj.camera_type,
+                    cam_status,
+                    cam_obj.ageing,
+                )
             synced_cameras.append(cam_code)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception("Failed to synchronize judge camera %s", cam_code)
+            skipped_cameras.append(f"{cam_code}: registry synchronization failed ({type(exc).__name__}).")
 
     return {
         "success": True,
         "message": f"Successfully synchronized {len(synced_cameras)} cameras from Sentinel Catalogue.",
-        "catalogue_endpoint": ingest_url,
+        "catalogue_endpoint": catalogue_urls[0],
         "source": fetch_source,
         "synced_count": len(synced_cameras),
+        "skipped": skipped_cameras,
+        "catalogue_warnings": catalogue_errors,
         "codecs_summary": {
             "H264": h264_count,
             "H265": h265_count
